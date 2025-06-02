@@ -1,0 +1,32 @@
+#!/bin/bash
+
+for e in 24576
+do
+	task_counts=[492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491]
+	t=$(( (1000000000 + (e * 32) - 1) / (e * 32) ))
+	for i in 42 43 44 45 46 47 48 49 50 51
+	do
+		cmd="python isaacgymenvs/train.py \
+			task_id=[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49] \
+			task_counts=$task_counts \
+			num_envs=$e \
+			task=meta-world-v2 \
+			fixed=False \
+			reward_scale=100 \
+			termination_on_success=False \
+			experiment=05_31_ppo_vanilla_mt50_rand_envs_${e}_seed_${i} \
+			train=meta-world-mt50-vanilla-PPO \
+			seed=$i \
+			wandb_activate=True \
+			wandb_project=IsaacGym \
+			sim_device=cuda:0 \
+			rl_device=cuda:0 \
+			headless=True \
+			record_videos=False \
+			reward_scale=100 \
+			termination_on_success=False \
+			max_iterations=$t"
+		echo $cmd
+		$cmd
+	done
+done

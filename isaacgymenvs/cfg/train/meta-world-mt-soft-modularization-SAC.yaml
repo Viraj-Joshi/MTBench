@@ -1,0 +1,76 @@
+params:
+  seed: ${...seed}
+  algo:
+    name: mt_sac_soft_modularization
+
+  model:
+    name: mt_continuous_sac
+
+  network:
+    name: soft_modularization_sac
+    separate: True # MUST BE TRUE, no support for shared actor critic network
+
+    space:
+      continuous:
+    log_std_bounds: [-20, 2]
+    soft_network:
+      num_experts: 2
+      num_layers: 2
+      D: 256
+      activation: relu
+      initializer:
+        name: kaiming_normal
+    state_encoder:
+      units: [256,256]
+      activation: relu
+      d2rl: False
+      initializer:
+        name: kaiming_normal
+    task_encoder:
+      units: [50,50]
+      activation: relu
+      d2rl: False
+      initializer:
+        name: kaiming_normal
+
+  load_checkpoint: ${if:${...checkpoint},True,False} # flag which sets whether to load the checkpoint
+  load_path: ${...checkpoint} # path to the checkpoint to load
+
+  config:
+    name: ${resolve_default:mt_soft_modularization_sac,${....experiment}} 
+    full_experiment_name: ${.name}
+    env_name: rlgpu
+    multi_gpu: ${....multi_gpu}
+    mixed_precision: False
+    normalize_input: True
+    value_bootstrap: True
+    normalize_value: True
+    num_actors: ${....task.env.numEnvs}
+    reward_shaper:
+      scale_value: 1.0
+    gamma: 0.99
+    gradient_steps_per_itr: ${....gradient_steps_per_itr} # Number of optimization steps where new batch is sampled and critic + actor are updated
+
+    init_alpha: 1
+    alpha_lr: 5e-3
+    actor_lr: 5e-4
+    critic_lr: 5e-4
+    critic_tau: ${....critic_tau}
+    batch_size: 8192
+    encoder_tau: 0.01
+    nstep: ${....nstep}
+    actor_update_freq: 1
+    critic_target_update_freq: 1
+
+    max_epochs: ${resolve_default:8000,${....max_iterations}}
+    horizon: 1 # samples new batch and performs a gradient step times gradient_steps_per_itr*horizon times per epoch
+    save_best_after: 200
+    save_frequency: 2500
+    print_stats: True
+    grad_norm: .5
+    learnable_temperature: True
+    num_warmup_steps: 32 # horizon length to do random actions before starting to learn 
+    replay_buffer_size: 5_000_000
+
+    target_entropy_coef: 1.0
+    use_disentangled_alpha: True # learn a different entropy coefficient for each task

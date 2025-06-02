@@ -1,0 +1,373 @@
+# used to create the object
+name: go1-benchmark
+
+physics_engine: ${..physics_engine}
+
+env:
+  num_envs: ${resolve_default:4096,${...num_envs}}
+  numEnvs: ${resolve_default:4096,${...num_envs}}
+
+  n_scan: 132                             # Scandots
+  n_priv: 3  # 3 + 3 + 3                       # Privileged (explicit): base linear velocity
+  n_priv_latent: 29  # 4 + 1 + 12 + 12          # Privileged (latent): mass, friction coefficients, motor strength (Kp and Kd factors, only used for control_type: "P")
+  n_proprio: 48  # 3 + 2 + 2 + 1 + 24 + 12 + 4  # Proprioceptive: base angular velocity, roll & pitch (imu), delta yaw to curent goal & next goal, velocity command, joint positions & velocities, previous actions, foot contacts
+  # history_len: 10
+  history_len: 0
+
+  # num_observations: 698
+  # numObservations: 698
+  # num_observations: 212
+  # numObservations: 212
+  num_observations: 233
+  numObservations: 233
+  num_privileged_obs: null # if not None a priviledge_obs_buf will be returned by step() (critic obs for assymetric training). None is returned otherwise 
+  num_actions: 12
+  numActions: 12
+  env_spacing: 3.  # not used with heightfields/trimeshes 
+  send_timeouts: True # send time out information to the algorithm
+  episode_length_s: 40 # episode length in seconds
+  
+  history_encoding: True
+  reorder_dofs: True
+
+  include_foot_contacts: True
+  
+  randomize_start_pos: False
+  randomize_start_vel: False
+  randomize_start_yaw: False
+  rand_yaw_range: 1.2
+  randomize_start_y: False
+  rand_y_range: 0.5
+  randomize_start_pitch: False
+  rand_pitch_range: 1.6
+
+  contact_buf_len: 100
+
+  next_goal_threshold: 0.3
+  reach_goal_delay: 0.02
+  num_future_goal_obs: 2
+
+  enableDebugVis: ${...record_videos}
+  cameraRenderingInterval: 50000
+
+  render_env_indices: [0]
+  early_termination: True
+
+depth:
+  use_camera: False
+  camera_num_envs: 192
+  camera_terrain_num_rows: 10
+  camera_terrain_num_cols: 21
+
+  position: {
+      "mean": [0.245 + 0.027, 0.0075, 0.072 + 0.02],
+      "std": [0.002, 0.002, 0.0002]
+  }
+  rotation: {
+      "mean": [0, 0.52, 0],
+      "std": [0, 0.01, 0]
+  }
+
+  update_interval: 5        # Update depth every n steps (50Hz for policy dt at 0.02s)
+  depth_delay_steps: 1      # Add latency of n steps (1 step is 0.02s)
+  depth_buf_len: 2
+
+  # Original resolution for Realsense D435 is 640 x 360, we scale down by factor of 6
+  original_resolution: [106, 60]
+  # We crop out the noisy edges of the image to get the processed resolution
+  crop_top: 0
+  crop_bottom: 0
+  crop_left: 8
+  crop_right: 8  # In terms of the scaled-down resolution
+  # crop_top, crop_bottom, crop_left, crop_right: 4, 0, 8, 8  # In terms of the scaled-down resolution
+  processed_resolution: [90, 60]
+
+  horizontal_fov: 87
+
+  near_clip: 0
+  far_clip: 2
+  bias_noise: 0.0
+  granular_noise: 0.02
+  blackout_noise: 0.03
+  blur_prob: 0.0
+  erase_prob: 0.0
+  erase_size: [5, 20]
+
+  use_direction_distillation: False
+
+normalization:
+  obs_scales:
+    lin_vel: 2.0
+    ang_vel: 0.25
+    dof_pos: 1.0
+    dof_vel: 0.05
+    height_measurements: 5.0
+  clip_observations: 100.
+  clip_actions: 5.0
+
+noise:
+  add_noise: False
+  noise_level: 1.0 # scales other values
+  quantize_height: True
+  noise_scales:
+    rotation: 0.0
+    dof_pos: 0.01
+    dof_vel: 0.05
+    lin_vel: 0.05
+    ang_vel: 0.05
+    gravity: 0.02
+    height_measurements: 0.02
+
+terrain:
+  type: "benchmark"  # Which set_terrain() function to use
+  check_feasibility: False  # Whether to check terrain validity and feasibility (used to check generated terrains)
+  easy_task_only: False
+
+  mesh_type: 'trimesh' # "heightfield" # none, plane, heightfield or trimesh
+  hf2mesh_method: "grid"  # grid or fast
+  max_error: 0.1 # for fast
+  max_error_camera: 2
+
+  y_range: [-0.4, 0.4]
+  
+  edge_width_thresh: 0.05
+  horizontal_scale: 0.05        # [m] Granularity of the grid cells in terrain plane (x, y) (Note: this influences computation time by a lot)
+                                  #     When training with depth, consider using 0.1 to reduce computation time
+  vertical_scale: 0.005         # [m] Granularity of the cells' height in terrain plane (z)
+  border_size: 5                # [m] Size of the flat border around the entire terrain
+  height: [0.02, 0.06]
+  simplify_grid: False
+  gap_size: [0.02, 0.1]
+  stepping_stone_distance: [0.02, 0.08]
+  downsampled_scale: 0.075
+  curriculum: True
+
+  all_vertical: False
+  no_flat: True
+  
+  static_friction: 1.0
+  dynamic_friction: 1.0
+  restitution: 0.
+  measure_heights: True
+  measured_points_x: [-0.45, -0.3, -0.15, 0, 0.15, 0.3, 0.45, 0.6, 0.75, 0.9, 1.05, 1.2] # 1mx1.6m rectangle (without center line)
+  measured_points_y: [-0.75, -0.6, -0.45, -0.3, -0.15, 0., 0.15, 0.3, 0.45, 0.6, 0.75]
+  measure_horizontal_noise: 0.0
+
+  selected: False # select a unique terrain type and pass all arguments
+  terrain_kwargs: None # Dict of arguments for selected terrain
+  max_init_terrain_level: 2 # starting curriculum state
+  terrain_length: 18
+  terrain_width: 4
+  num_rows: 10 # number of terrain rows (levels)  # spreaded is benifitiall !
+  num_cols: 21 # number of terrain cols (types)
+  
+  # terrain_proportions: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.2, 0.2, 0.2, 0.2, 0.2, 0.0]
+  task_id: ${...task_id}  # from 0 to 19
+        
+  # trimesh only:
+  slope_treshold: 1.5 # slopes above this threshold will be corrected to vertical surfaces
+  origin_zero_z: True
+
+  num_goals: 8
+
+commands:
+  curriculum: False
+  max_curriculum: 1.
+  commands: [
+      "lin_vel_x",    # Forward velocity
+      # "lin_vel_y",    # Lateral velocity
+      # "ang_vel_yaw",  # Yaw velocity
+      # "heading"       # Heading (if enabled, overwrites ang_vel_yaw with heading error)
+  ]
+  resampling_time: 6 # time before command are changed[s]
+  
+  lin_vel_clip: 0.2
+  ang_vel_clip: 0.4
+
+  ranges:
+    # lin_vel_x: [0.0, 0.8]
+    lin_vel_x: [0.3, 0.8]
+
+    # Unused old values, kept for reference
+    # lin_vel_x: [0.0, 2.0]  # For pre-training walking policy on flat terrain
+    # lin_vel_x: [0.3, 1.2]  # For training policy on parkour terrain
+
+    lin_vel_y: [0.0, 0.0]
+    ang_vel_yaw: [-0.5, 0.5]
+    heading: [0.0, 0.0]
+
+  curriculum_ranges:
+    lin_vel_x: [0.0, 1.5]
+    lin_vel_y: [0.0, 0.0]
+    ang_vel_yaw: [0.0, 0.0]
+    heading: [0.0, 0.0]
+
+  curriculum_incremnt:
+    lin_vel_x: 0.1
+    lin_vel_y: 0.1
+    ang_vel_yaw: 0.1
+    heading: 0.5
+
+  waypoint_delta: 0.7
+
+init_state:
+  pos: [0.0, 0.0, 0.42] # x,y,z [m]
+  rot: [0.0, 0.0, 0.0, 1.0] # x,y,z,w [quat]
+  lin_vel: [0.0, 0.0, 0.0]  # x,y,z [m/s]
+  ang_vel: [0.0, 0.0, 0.0]  # x,y,z [rad/s]
+  default_joint_angles: { # = target angles [rad] when action = 0.0
+    'FL_hip_joint': 0.1,   # [rad]
+    'RL_hip_joint': 0.1,   # [rad]
+    'FR_hip_joint': -0.1 ,  # [rad]
+    'RR_hip_joint': -0.1,   # [rad]
+
+    'FL_thigh_joint': 0.8,     # [rad]
+    'RL_thigh_joint': 1.,   # [rad]
+    'FR_thigh_joint': 0.8,     # [rad]
+    'RR_thigh_joint': 1.,   # [rad]
+
+    'FL_calf_joint': -1.5,   # [rad]
+    'RL_calf_joint': -1.5,    # [rad]
+    'FR_calf_joint': -1.5,  # [rad]
+    'RR_calf_joint': -1.5,    # [rad]
+  }
+
+init_state_slope:
+  pos: [0.56, 0.0, 0.24] # x,y,z [m]
+  rot: [0.0, 0.0, 0.0, 1.0] # x,y,z,w [quat]
+  lin_vel: [0.0, 0.0, 0.0]  # x,y,z [m/s]
+  ang_vel: [0.0, 0.0, 0.0]  # x,y,z [rad/s]
+  default_joint_angles: { # = target angles [rad] when action = 0.0
+    'FL_hip_joint': 0.03,   # [rad]
+    'RL_hip_joint': 0.03,   # [rad]
+    'FR_hip_joint': -0.03,  # [rad]
+    'RR_hip_joint': -0.03,   # [rad]
+
+    'FL_thigh_joint': 1.0,     # [rad]
+    'RL_thigh_joint': 1.9,   # [rad]1.8
+    'FR_thigh_joint': 1.0,     # [rad]
+    'RR_thigh_joint': 1.9,   # [rad]
+
+    'FL_calf_joint': -2.2,   # [rad]
+    'RL_calf_joint': -0.9,    # [rad]
+    'FR_calf_joint': -2.2,  # [rad]
+    'RR_calf_joint': -0.9,    # [rad]
+  }
+
+control:
+  control_type: 'P' # P: position, V: velocity, T: torques
+  # PD Drive parameters:
+  stiffness: {'joint': 50.0}  # [N*m/rad]
+  damping: {'joint': 3}     # [N*m*s/rad]
+  # action scale: target angle: actionScale * action + defaultAngle
+  action_scale: 1.0
+  # decimation: Number of control action updates @ sim DT per policy DT
+  decimation: 4
+
+asset:
+  file: ""
+  foot_name: "foot" # name of the feet bodies, used to index body state and contact force tensors
+  penalize_contacts_on: ["thigh", "calf"]
+  terminate_after_contacts_on: []
+  disable_gravity: False
+  collapse_fixed_joints: True # merge bodies connected by fixed joints. Specific fixed joints can be kept by adding " <... dont_collapse="true">
+  fix_base_link: False # fixe the base of the robot
+  default_dof_drive_mode: 3 # see GymDofDriveModeFlags (0 is none, 1 is pos tgt, 2 is vel tgt, 3 effort)
+  self_collisions: 1 # 1 to disable, 0 to enable...bitwise filter
+  replace_cylinder_with_capsule: True # replace collision cylinders with capsules, leads to faster/more stable simulation
+  flip_visual_attachments: False  # Used for original URDF
+  
+  density: 0.001
+  angular_damping: 0.
+  linear_damping: 0.
+  max_angular_velocity: 1000.
+  max_linear_velocity: 1000.
+  armature: 0.
+  thickness: 0.01
+
+  length: 0.645  # [m]
+  width: 0.280   # [m]
+  height: 0.400  # [m]
+
+domain_rand:
+  # Original values from Extreme Parkour
+  randomize_friction: True
+  friction_range: [0.6, 2.]
+  randomize_base_mass: True
+  added_mass_range: [0., 3.]
+  randomize_base_com: True
+  added_com_range: [-0.2, 0.2]
+  push_robots: True
+  push_interval_s: 8
+  max_push_vel_xy: 0.5
+  randomize_motor: True
+  motor_strength_range: [0.8, 1.2]
+
+  # Inspired by Robot Parkour Learning
+  # randomize_friction: True
+  # friction_range: [0.2, 2.]
+  # randomize_base_mass: True
+  # added_mass_range: [-1.0, 1.0]
+  # randomize_base_com: True
+  # added_com_range: [-0.2, 0.2]
+  # push_robots: True
+  # push_interval_s: 8
+  # max_push_vel_xy: 0.5
+  # randomize_motor: True
+  # motor_strength_range: [0.9, 1.1]
+  
+  action_delay: False                          # Enable action delay
+  delay_update_global_steps: 120000            # How many steps until we update delay to the next element in action_delay_steps
+  # action_delay_steps: [0.5]                      # Action delays (in steps) to apply, training starts with first element and moves to the next every delay_update_global_steps
+  # action_delay_steps: [1]                      # Action delays (in steps) to apply, training starts with first element and moves to the next every delay_update_global_steps
+  # action_delay_steps: [1.25]                      # Action delays (in steps) to apply, training starts with first element and moves to the next every delay_update_global_steps
+  action_delay_steps: [1.5]                      # Action delays (in steps) to apply, training starts with first element and moves to the next every delay_update_global_steps
+  # action_delay_steps: [2]                      # Action delays (in steps) to apply, training starts with first element and moves to the next every delay_update_global_steps
+  action_buf_len: 7   # (Multiply by 4 to account for decimation, since buffer is updated during compute_torques())
+        
+rewards:
+  scales:
+    # tracking rewards
+    # reach_goal: 1.5
+    tracking_goal_vel: 4.0 # 1.5
+    tracking_yaw: 1.0 # 0.5
+    # reach_goal: 100.0
+    # negative_vel_penalty: -2.0
+    energy_cost: -0.0005
+    collision: -10.
+            
+  only_positive_rewards: True # if true negative total rewards are clipped at zero (avoids early termination problems)
+  tracking_sigma: 0.25 # tracking reward: exp(-error^2/sigma)
+  soft_dof_pos_limit: 0.9 # percentage of urdf limits, values above this limit are penalized
+  soft_dof_vel_limit: 1
+  soft_torque_limit: 0.4
+  base_height_target: 0.25
+  max_contact_force: 40. # forces above this value are penalized
+
+    # viewer camera:
+viewer:
+  ref_env: 0
+  pos: [10, 0, 6]  # [m]
+  lookat: [11., 5, 3.]  # [m]
+
+sim:
+  dt: 0.005
+  substeps: 1
+  gravity: [0., 0. ,-9.81]  # [m/s^2]
+  up_axis: "z"  # 0 is y, 1 is z
+  use_gpu_pipeline: ${eq:${...pipeline},"gpu"}
+
+  physx:
+    num_threads: ${....num_threads}
+    solver_type: ${....solver_type}
+    use_gpu: ${contains:"cuda",${....sim_device}} # set to False to run on CPU
+    num_position_iterations: 8
+    num_velocity_iterations: 1
+    contact_offset: 0.01
+    rest_offset: 0.0
+    bounce_threshold_velocity: 0.5
+    max_depenetration_velocity: 1.0
+    default_buffer_size_multiplier: 5.0
+    max_gpu_contact_pairs: 16777216 # 1024*1024
+    num_subscenes: ${....num_subscenes}
+    contact_collection: 2 # 0: CC_NEVER (don't collect contact info), 1: CC_LAST_SUBSTEP (collect only contacts on last substep), 2: CC_ALL_SUBSTEPS (broken - do not use!)

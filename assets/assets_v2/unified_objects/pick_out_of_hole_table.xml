@@ -1,0 +1,43 @@
+<mujoco>
+    <compiler angle="radian" inertiafromgeom="auto" inertiagrouprange="4 5"/>
+    <asset>
+        <texture name="T_table" type="cube" file="../textures/wood2.png"/>
+        <texture name="T_floor" type="2d" file="../textures/floor2.png"/>
+
+        <material name="basic_floor" texture="T_floor" texrepeat="12 12" shininess=".3" specular="0.5"
+                  reflectance="0.2"/>
+        <material name="table_wood" texture="T_table" shininess=".3" specular="0.5"/>
+        <material name="table_col" rgba="0.3 0.3 1.0 0.5" shininess="0" specular="0"/>
+        <material name="cmwhite" rgba=".85 .85 .85 1" shininess="1" reflectance=".7" specular=".5"/>
+
+        <mesh file="../objects/meshes/table/tablebody.stl" name="tablebody" scale="1 1 1"/>
+        <mesh file="../objects/meshes/table/tabletop.stl" name="tabletop" scale="1 1 1"/>
+
+        <texture name="T_wallmetal" type="cube" file="../textures/metal.png"/>
+        <material name="wall_metal" texture="T_wallmetal" shininess="1" reflectance="1" specular=".5"/>
+    </asset>
+
+    <worldbody>
+      <body name="root">
+        <body name="tablelink" pos="0 0 0">
+          <geom material="cmwhite" group="1" type="box" size=".7 .4 .027" pos="0 0 -.027" conaffinity="0"
+                contype="0"/>
+          <geom material="cmwhite" group="1" mesh="tablebody" pos="0 0 -0.65" type="mesh" conaffinity="0"
+                contype="0"/>
+          <geom material="table_col" group="4" pos="0.0 0.0 -0.46" size="0.7 0.4 0.46" type="box" conaffinity="1"
+                contype="0"/>
+        </body>
+        <body pos="0 0 0">
+          <geom material="cmwhite" pos="0.0 -0.175 0.027" size="0.7 0.225 0.027" type="box" conaffinity="0" contype="0" group="1"/>
+          <geom material="cmwhite" pos="0.0 0.375 0.027" size="0.15 0.025 0.027" type="box" conaffinity="0" contype="0" group="1"/>
+          <geom material="cmwhite" pos="-0.425 0.225 0.027" size="0.275 0.175 0.027" type="box" conaffinity="0" contype="0" group="1"/>
+          <geom material="cmwhite" pos="0.425 0.225 0.027" size="0.275 0.175 0.027" type="box" conaffinity="0" contype="0" group="1"/>
+
+          <geom material="table_col" pos="0.0 -0.175 0.027" size="0.7 0.225 0.027" type="box" conaffinity="1" contype="0" group="4" solref="0.005 .1"/>
+          <geom material="table_col" pos="0.0 0.375 0.027" size="0.15 0.025 0.027" type="box" conaffinity="1" contype="0" group="4" solref="0.005 .1"/>
+          <geom material="table_col" pos="-0.425 0.225 0.027" size="0.275 0.175 0.027" type="box" conaffinity="1" contype="0" group="4" solref="0.005 .1"/>
+          <geom material="table_col" pos="0.425 0.225 0.027" size="0.275 0.175 0.027" type="box" conaffinity="1" contype="0" group="4" solref="0.005 .1"/>
+        </body>
+      </body>
+    </worldbody>
+</mujoco>

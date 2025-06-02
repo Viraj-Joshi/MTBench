@@ -1,0 +1,55 @@
+params:
+  seed: ${...seed}
+  algo:
+    name: mt_q_learning
+
+  model:
+    name: mt_parallel_q
+
+  network:
+    name: pqn
+
+    space:
+      continuous: # can be ignored
+    q:
+      residual_network: True
+      num_blocks: 2
+      D: 256
+      activation: relu
+      initializer:
+        name: kaiming_normal
+      norm_first_layer: False # batchnorm first layer only
+
+  load_checkpoint: ${if:${...checkpoint},True,False} # flag which sets whether to load the checkpoint
+  load_path: ${...checkpoint} # path to the checkpoint to load
+
+  config:
+    name: ${resolve_default:pqn_${....task_id},${....experiment}} 
+    full_experiment_name: ${.name}
+    env_name: rlgpu
+    multi_gpu: ${....multi_gpu}
+    mixed_precision: False
+    normalize_input: False
+    normalize_value: False
+    num_actors: ${....task.env.numEnvs}
+    init_at_random_progress: True
+    reward_shaper:
+      scale_value: 1.0
+    gamma: 0.99
+    q_lambda: .5
+    mini_epochs: 8 # number of passes over optimization of random minibatches
+    start_e: 1.0
+    end_e: 0.005
+    epsilon_decay: True
+    exploration_fraction: 0.005
+
+    critic_lr: 3e-4
+    anneal_lr: True
+    num_minibatches: 4
+    max_grad_norm: 10.0
+
+    max_epochs: ${resolve_default:300,${....max_iterations}}
+    horizon: 16
+    save_best_after: 1000
+    save_frequency: 50000
+    print_stats: True

@@ -1,0 +1,29 @@
+<mujoco>
+    <asset>
+        <texture name="T_table" type="cube" file="../textures/wood2.png"/>
+
+        <material name="table_wood" texuniform="false" texture="T_table" shininess=".3" specular="0.5"/>
+        <material name="table_col" rgba="0.3 0.3 1.0 0.5" shininess="0" specular="0"/>
+        <material name="cmwhite" rgba=".85 .85 .85 1" shininess="1" reflectance=".7" specular=".5"/>
+
+        <mesh file="../objects/meshes/table/tablebody.stl" name="tablebody" scale="1 1 1"/>
+        <mesh file="../objects/meshes/table/tabletop.stl" name="tabletop" scale="1 1 1"/>
+    </asset>
+
+    <worldbody>
+        <body name="tablelink" pos="0 0 0">
+            <geom material="cmwhite" group="1" pos="0 -0.12 0" size="0.08 0.28 0.05" type="box" conaffinity="0" contype="0"/>
+            <geom material="cmwhite" group="1" pos="-0.39 0 0" size="0.31 0.4 0.05" type="box" conaffinity="0" contype="0"/>
+            <geom material="cmwhite" group="1" pos="0.39 0 0" size="0.31 0.4 0.05" type="box" conaffinity="0" contype="0"/>
+            <geom material="cmwhite" group="1" pos="0 0.36 0" size="0.08 0.04 0.05" type="box" conaffinity="0" contype="0"/>
+            <geom material="cmwhite" group="1" pos="0 0 -.065" size="0.7 0.4 .015" type="box" conaffinity="0" contype="0"/>
+            <geom material="cmwhite" group="1" mesh="tablebody" pos="0 0 -0.65" type="mesh" conaffinity="0" contype="0"/>
+            <geom material="table_col" group="4" pos="0 0 -0.46" size="0.7 0.4 0.46" type="box" conaffinity="1" contype="0"/> <!-- elevates floor of the hole -->
+            <geom material="table_col" group="4" pos="0 0 -0.483" size="0.69 0.38 0.43" type="box" conaffinity="1" contype="0"/>
+            <geom material="table_col" group="4" pos="0 -0.12 0" size="0.08 0.28 0.05" type="box" conaffinity="1" contype="0"/>
+            <geom material="table_col" group="4" pos="-0.39 0 0" size="0.31 0.4 0.05" type="box" conaffinity="1" contype="0"/>
+            <geom material="table_col" group="4" pos="0.39 0 0" size="0.31 0.4 0.05" type="box" conaffinity="1" contype="0"/>
+            <geom material="table_col" group="4" pos="0 0.36 0" size="0.08 0.04 0.05" type="box" conaffinity="1" contype="0"/>
+        </body>
+    </worldbody>
+</mujoco>

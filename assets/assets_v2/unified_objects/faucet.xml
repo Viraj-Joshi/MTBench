@@ -1,0 +1,67 @@
+<mujoco>
+    <compiler angle="radian" inertiafromgeom="auto" inertiagrouprange="4 5"/>
+    <asset>
+        <texture name="T_fauc_met" type="cube" file="../textures/metal2.png"/>
+
+        <material name="faucet_col" rgba="0.3 0.3 1.0 0.5" shininess="0" specular="0"/>
+        <material name="faucet_white" rgba=".75 .75 .75 1" shininess="1" reflectance=".7" specular=".5"/>
+        <material name="faucet_red" rgba=".5 .1 .1 1" shininess="1" reflectance=".7" specular=".5"/>
+
+        <material name="faucet_metal" rgba=".7 .7 .7 1" texture="T_fauc_met" shininess="1" reflectance="1" specular=".5"/>
+
+        <mesh file="../objects/meshes/faucet/faucetbase.stl" name="faucetbase"/>
+        <mesh file="../objects/meshes/faucet/faucethandle1.stl" name="faucethandle1"/>
+        <mesh file="../objects/meshes/faucet/faucethead.stl" name="faucethead"/>
+    </asset>
+
+    <default>
+
+      <default class="faucet_base">
+          <joint armature="0.001" damping="2" limited="true"/>
+          <geom conaffinity="0" contype="0" group="1" type="mesh"/>
+          <position ctrllimited="true" ctrlrange="0 1.57"/>
+          <default class="faucet_viz">
+              <geom condim="4" type="mesh"/>
+          </default>
+          <default class="faucet_col">
+              <geom conaffinity="1" condim="3" contype="1" group="4" material="faucet_col" solimp="0.99 0.99 0.01" solref="0.01 1"/>
+          </default>
+      </default>
+    </default>
+
+    <worldbody>
+        <body name="faucetBase" pos="0 0 0">
+            <body childclass="faucet_base">
+                <body name="faucet_link">
+                    <geom material="faucet_metal" mesh="faucetbase" pos="0 0 0.088"/>
+                    <geom class="faucet_col" pos="0 0 0.009" size="0.046 0.009" type="cylinder"/>
+                    <geom class="faucet_col" pos="0 0 0.061" size="0.017 0.044" type="cylinder"/>
+                    <body name="faucet_link2" pos="0 0 0.124">
+                        <joint name="knob_Joint_1" type="hinge" range="-1.57 1.57" axis="0 0 1"/>
+                        <geom material="faucet_metal" euler="1.57 0 0" mesh="faucethandle1" pos="0 -0.06 0.001"/>
+                        <geom material="faucet_metal" mesh="faucethead" pos="0 0 0.001"/>
+                        <geom name='end' material="faucet_red" euler="1.57 0 0" pos="0 -0.12 0.001" size="0.017 .017 0.055" type="box"/>
+
+                        <geom class="faucet_col" euler="1.57 0 0" pos="0 -0.05 0.001" size="0.012 0.021" type="cylinder"/>
+                        <geom class="faucet_col" euler="1.57 0 0" pos="0 -0.12 0.001" size="0.017 0.055" type="capsule"/>
+                        <geom class="faucet_col" pos="0 0 0.001" size="0.032 0.02" type="cylinder"/>
+
+                        <body name="handleStartClose" pos="0.015 -0.175 0"></body>
+                        <body name="handleStartOpen" pos="-0.015 -0.175 0"></body>
+                    </body>
+                </body>
+            </body>
+            <body name="goal_close" pos="-0.175 -0.015 0.125"/>
+            <body name="goal_open"  pos=" 0.175 -0.015 0.125"/>
+        </body>
+        
+
+<!--         <body name="box" pos="0 0.8 0.05">
+          <geom rgba="0.3 0.3 1 1" type="box" contype="1" size="0.1 0.05 0.05" name="box_left" conaffinity="1" pos="0 0 0" mass="1000" solimp="0.99 0.99 0.01" solref="0.01 1"/>
+          <geom rgba="0.3 0.3 1 1" type="box" contype="1" size="0.1 0.05 0.05" name="box_right" conaffinity="1" pos="0 0.16 0" mass="1000" solimp="0.99 0.99 0.01" solref="0.01 1"/>
+          <geom rgba="0.3 0.3 1 1" type="box" contype="1" size="0.035 0.03 0.05" name="box_front" conaffinity="1" pos="0.065 0.08 0" mass="1000" solimp="0.99 0.99 0.01" solref="0.01 1"/>
+          <geom rgba="0.3 0.3 1 1" type="box" contype="1" size="0.035 0.03 0.05" name="box_behind" conaffinity="1" pos="-0.065 0.08 0" mass="1000" solimp="0.99 0.99 0.01" solref="0.01 1"/>
+          <joint type="slide" range="-0.2 0." axis="0 1 0" name="goal_slidey" pos="0 0 0" damping="1.0"/>
+        </body>
+ -->    </worldbody>
+</mujoco>

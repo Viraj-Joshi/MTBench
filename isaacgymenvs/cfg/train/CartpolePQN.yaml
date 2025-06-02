@@ -1,0 +1,72 @@
+params:
+  seed: ${...seed}
+  algo:
+    name: q_learning
+
+  model:
+    name: parallel_q
+
+  network:
+    name: pqn
+
+    space:
+      continuous: # can be ignored
+        
+    q:
+      num_layers: 2
+      D: 256
+      activation: elu
+      initializer:
+        name: kaiming_normal
+    head:
+      units: [256,256]
+      activation: relu
+      d2rl: False
+      initializer:
+        name: kaiming_normal
+    state_encoder:
+      units: [256,256]
+      activation: relu
+      d2rl: False
+      initializer:
+        name: kaiming_normal
+    task_encoder:
+      units: [256,256]
+      activation: relu
+      d2rl: False
+      initializer:
+        name: kaiming_normal
+
+  load_checkpoint: ${if:${...checkpoint},True,False} # flag which sets whether to load the checkpoint
+  load_path: ${...checkpoint} # path to the checkpoint to load
+
+  config:
+    name: ${resolve_default:Cartpole,${....experiment}} 
+    full_experiment_name: ${.name}
+    env_name: rlgpu
+    multi_gpu: ${....multi_gpu}
+    mixed_precision: False
+    normalize_input: False
+    normalize_value: False
+    num_actors: ${....task.env.numEnvs}
+    init_at_random_progress: True
+    reward_shaper:
+      scale_value: 1.0
+    gamma: 0.99
+    q_lambda: .95
+    gradient_steps_per_itr: 4 # gradient_steps_per_itr i.e Number of optimization steps that should occur before the training step is over and a new batch of transitions is collected by the actor.
+    epsilon_decay: True
+    start_e: 1.0
+    end_e: 0.05
+    exploration_fraction: 0.2
+
+    critic_lr: 3e-4
+    anneal_lr: True
+    num_minibatches: 1
+    max_grad_norm: 10.0
+
+    max_epochs: ${resolve_default:300,${....max_iterations}}
+    num_steps_per_episode: 2
+    save_best_after: 200
+    save_frequency: 1000
+    print_stats: True
