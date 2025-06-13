@@ -2,6 +2,7 @@ import os
 from collections import defaultdict
 import yaml
 import re
+import multiprocessing
 
 import pandas as pd
 import numpy as np
@@ -81,7 +82,7 @@ def adjust_data(df): # df is the DataFrame for a single run, after convert_to_el
     Adjusts the DataFrame by:
     1. Adding a row at index 0 with wall_time = 0, success = 0, frame = 0.
     2. Ensuring original data points (especially the first) have positive, spaced-out wall_times
-       if they were all zero or clumped at zero, to facilitate plotting.
+        if they were all zero or clumped at zero, to facilitate plotting.
     """
     df_copy = df.copy()
 
@@ -129,9 +130,8 @@ def plot_metrics(results_dict):
     SMALL_SIZE = 20
     MEDIUM_SIZE = 25
     BIGGER_SIZE = 30
-    MT10_FRAMES_XTICK_FONTSIZE = SMALL_SIZE - 6 # e.g., 14
-    # Fontsize for the scientific notation offset text (e.g., "1e9")
-    SCIENTIFIC_OFFSET_FONTSIZE = SMALL_SIZE - 4 # e.g. 16, making it larger than default
+    MT10_FRAMES_XTICK_FONTSIZE = SMALL_SIZE # e.g., 14
+    SCIENTIFIC_OFFSET_FONTSIZE = BIGGER_SIZE
 
     fig, axes = plt.subplots(2, 2, figsize=(20, 12))
     colors = {'MTSAC': '#3690ff', 'MTPPO': '#fba501', 'MTPQN': '#fb6347', 'MTGRPO': '#2ed573'}
@@ -209,7 +209,7 @@ def plot_metrics(results_dict):
                         time_interpolated = np.array(time_interpolated_data)
 
                     if time_interpolated.size == 0 or (time_interpolated.ndim > 1 and time_interpolated.shape[1] == 0):
-                         print(f"Time interpolated array is effectively empty for {exp_name}")
+                        print(f"Time interpolated array is effectively empty for {exp_name}")
                     else:
                         time_mean = np.nanmean(time_interpolated, axis=0)
                         time_ci_low = np.full(time_mean.shape, np.nan)
@@ -238,13 +238,13 @@ def plot_metrics(results_dict):
                                                               valid_time_ci_low,
                                                               valid_time_ci_high,
                                                               alpha=0.2, color=colors.get(algo, 'k'))
-                        else:
-                            print(f"No valid time bins to plot after masking for {exp_name}")
+                            else:
+                                print(f"No valid time bins to plot after masking for {exp_name}")
 
             # Process frame count plot
             valid_run_data_for_frame = [df for df in processed_run_data if 'frame' in df.columns and 'success' in df.columns and not df.empty]
             if not valid_run_data_for_frame:
-                 print(f"Skipping frame plot for {exp_name} due to missing columns or empty dataframes after adjustment.")
+                print(f"Skipping frame plot for {exp_name} due to missing columns or empty dataframes after adjustment.")
             else:
                 base_frames_series = valid_run_data_for_frame[0]['frame']
                 if not isinstance(base_frames_series, pd.Series) or base_frames_series.empty:
@@ -327,7 +327,7 @@ def plot_metrics(results_dict):
         try:
             offset_text_obj = ax_mt10_frames.xaxis.get_offset_text()
             if offset_text_obj.get_text() != '':
-                 offset_text_obj.set_fontsize(SCIENTIFIC_OFFSET_FONTSIZE) # Use defined larger size
+                offset_text_obj.set_fontsize(SCIENTIFIC_OFFSET_FONTSIZE) # Use defined larger size
         except AttributeError:
             pass
         ax_mt10_frames.set_xlim(left=0)
@@ -354,9 +354,7 @@ def plot_metrics(results_dict):
                 if not is_mt10_frames_symlog: # Not the MT10 symlog plot
                     axes[i, j].ticklabel_format(style='sci', axis='x', scilimits=(0,0))
                     try:
-                        offset_text_obj = axes[i, j].xaxis.get_offset_text()
-                        if offset_text_obj.get_text() != '':
-                             offset_text_obj.set_fontsize(SCIENTIFIC_OFFSET_FONTSIZE) # Apply larger font size here
+                        offset_text_obj = axes[i, j].xaxis.get_offset_text().set_fontsize(SMALL_SIZE-2)
                     except AttributeError:
                         pass
             axes[i, j].legend(fontsize=SMALL_SIZE)
@@ -379,6 +377,89 @@ def plot_metrics(results_dict):
     plt.savefig(os.path.join(output_dir, "mt10_mt50_comparison.png"))
     print(f"Plots saved: {output_dir}/mt10_mt50_comparison.pdf/png")
 
+def load_run(args):
+    """
+    Worker function to load data from a single run's event file.
+    """
+    exp_name, run_name, log_dir = args
+    
+    sp_options = []
+    current_algo_type_for_path = exp_name.split('-')[0].lower()
+    if "ppo" in current_algo_type_for_path or "grpo" in current_algo_type_for_path:
+        sp_options.append(os.path.join(log_dir, run_name, "summaries"))
+    sp_options.append(os.path.join(log_dir, run_name))
+
+    event_file_path = None
+    for sp_try in sp_options:
+        if os.path.isdir(sp_try):
+            try:
+                event_files = [f for f in os.listdir(sp_try) if f.startswith("events.out.tfevents")]
+                if event_files:
+                    event_file_path = os.path.join(sp_try, sorted(event_files)[-1])
+                    break
+            except (FileNotFoundError, Exception):
+                continue
+    
+    if not event_file_path:
+        # Return None if no event file is found
+        return exp_name, None
+
+    try:
+        ea = event_accumulator.EventAccumulator(event_file_path, size_guidance={'scalars': 0})
+        ea.Reload()
+        tags = ea.Tags().get("scalars", [])
+
+        success_tag_key = None
+        current_algo_type = exp_name.split('-')[0].lower()
+
+        tag_prefixes = [
+            f"Episode/average_task_success_rate",
+            f"episode/average_task_success_rate/frame",
+            f"episode/average_task_success_rate"
+        ]
+        
+        for prefix in tag_prefixes:
+            for tag in tags:
+                if tag.startswith(prefix):
+                    success_tag_key = tag
+                    break
+            if success_tag_key:
+                break
+        
+        if not success_tag_key:
+            return exp_name, None
+
+        values = ea.Scalars(success_tag_key)
+        if not values:
+            return exp_name, None
+
+        # Frame multipliers
+        frame_multiplier = 1
+        if "ppo" in current_algo_type:
+            frame_multiplier = 24576*32
+        elif "pqn" in current_algo_type:
+            frame_multiplier = 8192*16
+        elif "grpo" in current_algo_type:
+            frame_multiplier = 4096*150 if "MT10" in exp_name else 24576*150
+        elif "sac" in current_algo_type:
+            frame_multiplier = 4096
+
+        df = pd.DataFrame({
+            'success': [x.value for x in values],
+            'wall_time': [x.wall_time for x in values],
+            'frame': [x.step * frame_multiplier for x in values]
+        })
+
+        if df.empty:
+            return exp_name, None
+
+        convert_to_elapsed_hours(df)
+        return exp_name, df
+
+    except Exception as e:
+        print(f"Error processing {run_name}: {e}")
+        return exp_name, None
+
 
 if __name__ == "__main__":
     log_dir = "runs/"
@@ -386,7 +467,7 @@ if __name__ == "__main__":
     if not os.path.exists(log_dir) or not os.listdir(log_dir):
         print(f"Log directory '{log_dir}' not found or is empty. Please create/populate it.")
         if not os.path.exists(log_dir): os.makedirs(log_dir, exist_ok=True)
-
+    
     _listdir = []
     if os.path.exists(log_dir) and os.path.isdir(log_dir):
         _listdir = os.listdir(log_dir)
@@ -400,109 +481,35 @@ if __name__ == "__main__":
         "MTGRPO-MT10": [f for f in _listdir if "05_26_grpo_vanilla_mt10_rand" in f],
 
         "MTSAC-MT50": [f for f in _listdir if "vanilla_sac_mt50_rand" in f and 'seed_46' not in f],
-        "MTPPO-MT50": [f for f in _listdir if re.search(r"^ppo_vanilla_mt50_rand_envs",f)],
+        "MTPPO-MT50": [f for f in _listdir if "05_31_ppo_vanilla_mt50_rand_envs" in f],
         "MTGRPO-MT50": [f for f in _listdir if "05_26_grpo_vanilla_mt50_rand" in f],
     }
-
-    results = defaultdict(list)
-
-    for exp_name, run_names in sorted(runname_to_exps.items()):
-        print(f"Processing {exp_name}...")
+    
+    # Prepare arguments for multiprocessing
+    tasks = []
+    for exp_name, run_names in runname_to_exps.items():
         if not run_names:
             print(f"No run files found for {exp_name} based on patterns in '{log_dir}'.")
             continue
         for run_name in run_names:
-            sp_options = []
-            current_algo_type_for_path = exp_name.split('-')[0].lower()
-            if "ppo" in current_algo_type_for_path or "grpo" in current_algo_type_for_path:
-                sp_options.append(os.path.join(log_dir, run_name, "summaries"))
-            sp_options.append(os.path.join(log_dir, run_name))
+            tasks.append((exp_name, run_name, log_dir))
 
-            event_file_path = None
-            for sp_try in sp_options:
-                if os.path.isdir(sp_try):
-                    try:
-                        event_files = [f for f in os.listdir(sp_try) if f.startswith("events.out.tfevents")]
-                        if event_files:
-                            event_file_path = os.path.join(sp_try, sorted(event_files)[-1])
-                            break
-                    except FileNotFoundError:
-                        print(f"Warning: Path {sp_try} not found during event file search for {run_name}.")
-                        continue
-                    except Exception as e_list:
-                        print(f"Warning: Error listing files in {sp_try} for {run_name}: {e_list}")
-                        continue
-
-            if not event_file_path:
-                continue
-
-            print(f"Processing {run_name} from {event_file_path}")
-            try:
-                ea = event_accumulator.EventAccumulator(event_file_path, size_guidance={'scalars': 0})
-                ea.Reload()
-                tags = ea.Tags().get("scalars", [])
-
-                success_tag_key = None
-                current_algo_type = exp_name.split('-')[0].lower()
-
-                if "ppo" in current_algo_type or "pqn" in current_algo_type or "grpo" in current_algo_type:
-                    for tag in tags:
-                        if tag.startswith("Episode/average_task_success_rate"):
-                            success_tag_key = tag; break
-                elif "sac" in current_algo_type:
-                     for tag in tags:
-                        if tag.startswith("episode/average_task_success_rate/frame"):
-                            success_tag_key = tag; break
-
-                if not success_tag_key:
-                    for tag in tags:
-                        if tag.startswith("Episode/average_task_success_rate"): success_tag_key = tag; break
-                    if not success_tag_key:
-                         for tag in tags:
-                            if tag.startswith("episode/average_task_success_rate"): success_tag_key = tag; break
-
-                if not success_tag_key:
-                    print(f"Could not find success rate tag for {run_name} (algo type {current_algo_type}). Available tags (first 5): {tags[:5]}...")
-                    continue
-
-                values = ea.Scalars(success_tag_key)
-                if not values:
-                    print(f"No data for tag '{success_tag_key}' in {run_name}")
-                    continue
-
-                # Frame multipliers
-                frame_multiplier = 1
-                if "ppo" in current_algo_type:
-                    frame_multiplier = 24576*32
-                elif "pqn" in current_algo_type:
-                    frame_multiplier = 8192*16
-                elif "grpo" in current_algo_type:
-                    frame_multiplier = 4096*150 if "MT10" in exp_name else 24576*150
-                elif "sac" in current_algo_type:
-                    frame_multiplier = 1
-
-
-                df = pd.DataFrame({
-                    'success': [x.value for x in values],
-                    'wall_time': [x.wall_time for x in values],
-                    'frame': [x.step * frame_multiplier if frame_multiplier != 1 else x.step for x in values]
-                })
-
-                if df.empty:
-                    print(f"DataFrame empty after loading data for {run_name}")
-                    continue
-
-                convert_to_elapsed_hours(df)
+    results = defaultdict(list)
+    
+    # Use multiprocessing Pool to load runs in parallel
+    print(f"Loading {len(tasks)} runs using multiprocessing...")
+    with multiprocessing.Pool() as pool:
+        # Use tqdm to create a progress bar
+        for exp_name, df in tqdm(pool.imap_unordered(load_run, tasks), total=len(tasks), desc="Processing runs"):
+            if df is not None:
                 results[exp_name].append(df)
 
-            except Exception as e:
-                print(f"Error processing {run_name}: {e}")
-                import traceback
-                traceback.print_exc()
-
-    print("Starting plotting...")
+    print("\nStarting plotting...")
     if not results or not any(results.values()):
         print("No results were loaded. Skipping plotting.")
     else:
-        plot_metrics(results)
+        # Sort the results by experiment name for consistent plotting order
+        sorted_results = {k: results[k] for k in sorted(results)}
+        plot_metrics(sorted_results)
+    
     print("Done!")

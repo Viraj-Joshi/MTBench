@@ -6,6 +6,8 @@ import math # For ceiling function for grid dimensions
 import yaml # For reading config files
 import warnings # Added for LaTeX table helper
 import traceback # For detailed error printing
+import multiprocessing
+from functools import partial
 
 import pandas as pd
 import numpy as np
@@ -89,16 +91,22 @@ def get_comparison_string(setup_keys):
     return "_vs_".join(sanitized_names)
 
 
-# --- Helper Function to Extract Setup Info from Filename ---
-def extract_setup_info(run_name):
-    if 'SETUP_INFO' not in globals() or not isinstance(SETUP_INFO, dict):
+# --- Helper Function to Extract Setup Info from Filename (Refactored for Multiprocessing) ---
+def extract_setup_info(run_name, setup_info_dict):
+    """Extracts setup type, envs, and seed from a run name using provided patterns."""
+    if not isinstance(setup_info_dict, dict):
         return None, None, None
-    for setup_type, info in SETUP_INFO.items():
+    for setup_type, info in setup_info_dict.items():
         match = re.search(info['pattern'], run_name)
         if match:
-            num_envs = int(match.group(1))
-            seed_number = int(match.group(2))
-            return setup_type, num_envs, seed_number
+            try:
+                num_envs = int(match.group(1))
+                seed_number = int(match.group(2))
+                return setup_type, num_envs, seed_number
+            except (IndexError, ValueError):
+                # Pattern might not have 2 groups, or groups are not ints.
+                # Consider logging this if it's unexpected.
+                continue
     return None, None, None
 
 # --- Helper Function to Adjust Success Data ---
@@ -129,6 +137,115 @@ def adjust_generic_scalar_data(df, value_col_name='value'):
     df_copy = df_copy.sort_values('frame').reset_index(drop=True)
     df_copy.drop_duplicates(subset=['frame'], keep='last', inplace=True)
     return df_copy
+
+
+# --- Multiprocessing Worker Function ---
+def process_run_directory(item_name, log_dir, setup_info_for_worker, num_tasks_for_worker, horizon_for_worker, current_setting_name_for_worker):
+    """
+    Processes a single run directory to extract TensorBoard data.
+    Designed to be called by a multiprocessing pool.
+    """
+    item_path = os.path.join(log_dir, item_name)
+    CONFIG_FILENAME = "config.yaml"
+
+    setup_type, num_envs, seed_number = extract_setup_info(item_name, setup_info_for_worker)
+    if setup_type is None:
+        return {'status': 'skipped_no_match', 'item_name': item_name}
+
+    setup_config_main = setup_info_for_worker.get(setup_type)
+    if not setup_config_main:
+        return {'status': 'skipped_no_config', 'item_name': item_name}
+
+    required_env_count = setup_config_main.get('required_envs')
+    if required_env_count is not None and num_envs != required_env_count:
+        return {'status': 'skipped_env_mismatch', 'item_name': item_name, 'num_envs': num_envs, 'required': required_env_count}
+
+    config_path = os.path.join(item_path, CONFIG_FILENAME)
+    if current_setting_name_for_worker == "mt10":
+        task_ids_from_config = [4, 16, 17, 18, 28, 31, 38, 40, 48, 49]
+    elif num_tasks_for_worker > 0:
+        task_ids_from_config = list(range(num_tasks_for_worker))
+    else:
+        task_ids_from_config = []
+
+    if os.path.isfile(config_path):
+        try:
+            with open(config_path, "r") as f:
+                config_yaml = yaml.safe_load(f)
+            loaded_task_ids_raw = config_yaml.get('task_id')
+            if loaded_task_ids_raw is not None and isinstance(loaded_task_ids_raw, list) and all(isinstance(tid, int) for tid in loaded_task_ids_raw):
+                task_ids_from_config = loaded_task_ids_raw if loaded_task_ids_raw else list(range(num_tasks_for_worker))
+        except Exception:
+            pass # Silently fail and use default task IDs
+
+    current_num_tasks_for_run = len(task_ids_from_config)
+    event_file_path = None
+    for p_dir_opt in [os.path.join(item_path, "summaries"), item_path]:
+        if os.path.isdir(p_dir_opt):
+            try:
+                event_files = [f for f in os.listdir(p_dir_opt) if f.startswith("events.out.tfevents")]
+                if event_files:
+                    event_file_path = os.path.join(p_dir_opt, sorted(event_files)[-1])
+                    break
+            except Exception:
+                continue
+    if event_file_path is None:
+        return {'status': 'skipped_no_event_file', 'item_name': item_name}
+
+    try:
+        ea = event_accumulator.EventAccumulator(event_file_path, size_guidance={'scalars': 0}, purge_orphaned_data=True)
+        ea.Reload()
+        all_scalar_tags = ea.Tags().get("scalars", [])
+    except Exception:
+        return {'status': 'error_loading_ea', 'item_name': item_name}
+
+    if not all_scalar_tags:
+        return {'status': 'skipped_no_scalars', 'item_name': item_name}
+
+    # Per-run HORIZON override if needed
+    run_horizon = 150 if 'grpo' in item_name.lower() else horizon_for_worker
+
+    run_local_data = defaultdict(lambda: {'per_task_success': defaultdict(list), 'per_task_reward': defaultdict(list), 'overall_avg': list(), 'avg_reward': list()})
+    run_data_loaded_flag = False
+
+    overall_s_tag = "Episode/average_task_success_rate"
+    if overall_s_tag in all_scalar_tags:
+        scalar_events = ea.Scalars(overall_s_tag)
+        if scalar_events:
+            df_overall_s = pd.DataFrame({'success': [x.value for x in scalar_events], 'frame': [x.step * num_envs * run_horizon for x in scalar_events]})
+            if not df_overall_s.empty:
+                run_local_data[setup_type]['overall_avg'].append(df_overall_s)
+                run_data_loaded_flag = True
+
+    agg_r_tag = "rewards/step"
+    if agg_r_tag in all_scalar_tags:
+        scalar_events_agg_r = ea.Scalars(agg_r_tag)
+        if scalar_events_agg_r:
+            df_agg_r = pd.DataFrame({'value': [x.value for x in scalar_events_agg_r], 'frame': [x.step for x in scalar_events_agg_r]})
+            if not df_agg_r.empty:
+                run_local_data[setup_type]['avg_reward'].append(df_agg_r)
+                run_data_loaded_flag = True
+
+    if current_num_tasks_for_run > 0 and task_ids_from_config:
+        for task_num_idx, actual_task_id in enumerate(task_ids_from_config):
+            s_tag = f"Episode/task_{actual_task_id}_success"
+            if s_tag in all_scalar_tags and (s_events := ea.Scalars(s_tag)):
+                df_s = pd.DataFrame({'success': [x.value for x in s_events], 'frame': [x.step * num_envs * run_horizon for x in s_events]})
+                if not df_s.empty: run_local_data[setup_type]['per_task_success'][task_num_idx].append(df_s)
+
+            r_tag = f"Episode/task_{actual_task_id}_reward"
+            if r_tag in all_scalar_tags and (r_events := ea.Scalars(r_tag)):
+                df_r = pd.DataFrame({'value': [x.value for x in r_events], 'frame': [x.step for x in r_events]})
+                if not df_r.empty: run_local_data[setup_type]['per_task_reward'][task_num_idx].append(df_r)
+
+    if run_data_loaded_flag:
+        return {'status': 'processed', 'setup_type': setup_type, 'data': run_local_data[setup_type], 'item_name': item_name}
+    else:
+        return {'status': 'skipped_no_data', 'item_name': item_name}
+
+def process_run_directory_wrapper(args):
+    """Helper to unpack arguments for pool.imap_unordered."""
+    return process_run_directory(*args)
 
 
 # --- Helper Function for Non-Stratified Bootstrapped CI on Overall/Aggregate Metrics ---
@@ -344,7 +461,7 @@ def generate_latex_table_final_format(
 
                 # Check if data exists for this setting and stat
                 if setting_name_current_col in all_settings_numerical_summaries_data and \
-                    stat_short in all_settings_numerical_summaries_data[setting_name_current_col]:
+                   stat_short in all_settings_numerical_summaries_data[setting_name_current_col]:
                     
                     summaries_for_current_setting_stat = all_settings_numerical_summaries_data[setting_name_current_col][stat_short]
                     
@@ -916,7 +1033,7 @@ def generate_combined_rliable_plots(all_rliable_data, all_s_info, cmd_args): # R
 
                 for alg_idx, common_algo_name in enumerate(y_algorithms_ordered):
                     if common_algo_name in point_estimates_setting and \
-                        common_algo_name in interval_estimates_setting:
+                       common_algo_name in interval_estimates_setting:
                         
                         point_val_arr = point_estimates_setting[common_algo_name]
                         interval_val_arr = interval_estimates_setting[common_algo_name]
@@ -1047,7 +1164,6 @@ if __name__ == "__main__":
         all_settings_specific_setup_info[CURRENT_SETTING_NAME] = SETUP_INFO.copy()
 
 
-        CONFIG_FILENAME = "config.yaml"
         results_data = defaultdict(lambda: { # This will be for the current setting_val
             'per_task_success': defaultdict(list), 'per_task_reward': defaultdict(list),
             'overall_avg': list(), 'avg_reward': list()
@@ -1062,99 +1178,43 @@ if __name__ == "__main__":
                 continue
 
 
-        directory_contents = os.listdir(LOG_DIR)
-        directories_to_process = [name for name in directory_contents if os.path.isdir(os.path.join(LOG_DIR, name))]
+        directories_to_process = [name for name in os.listdir(LOG_DIR) if os.path.isdir(os.path.join(LOG_DIR, name))]
         print(f"Found {len(directories_to_process)} potential run directories to scan in '{LOG_DIR}' for {CURRENT_SETTING_NAME.upper()}.")
 
-        processed_runs_total = 0; skipped_runs_count = 0
-        for item_name in tqdm(directories_to_process, desc=f"Scanning Dirs ({CURRENT_SETTING_NAME.upper()})", unit="dir", ncols=100, position=0):
-            item_path = os.path.join(LOG_DIR, item_name)
-            # extract_setup_info uses global SETUP_INFO, which is fine as it's set for the current setting
-            setup_type, num_envs, seed_number = extract_setup_info(item_name)
-            if setup_type is None: skipped_runs_count +=1; continue
+        processed_runs_total = 0
+        skipped_runs_count = 0
+        
+        # Prepare arguments for the multiprocessing worker
+        worker_args = (LOG_DIR, SETUP_INFO, NUM_TASKS, HORIZON, CURRENT_SETTING_NAME)
+        tasks = [(d, *worker_args) for d in directories_to_process]
 
-            setup_config_main = SETUP_INFO.get(setup_type)
-            if not setup_config_main: skipped_runs_count +=1; continue
-            required_env_count = setup_config_main.get('required_envs')
-            if required_env_count is not None and num_envs != required_env_count :
-                tqdm.write(f"Skipping {item_name}: Env count {num_envs} != required {required_env_count}.")
-                skipped_runs_count +=1; continue
-
-            config_path = os.path.join(item_path, CONFIG_FILENAME)
-            if CURRENT_SETTING_NAME == "mt10":
-                task_ids_from_config = [4,16,17,18,28,31,38,40,48,49]
-            elif NUM_TASKS > 0 :
-                task_ids_from_config = list(range(NUM_TASKS))
-            else:
-                task_ids_from_config = []
-
-            if os.path.isfile(config_path):
-                try:
-                    with open(config_path, "r") as f: config_yaml = yaml.safe_load(f)
-                    loaded_task_ids_raw = config_yaml.get('task_id')
-                    if loaded_task_ids_raw is not None:
-                        if isinstance(loaded_task_ids_raw, list) and all(isinstance(tid, int) for tid in loaded_task_ids_raw):
-                            if not loaded_task_ids_raw and NUM_TASKS > 0 :
-                                task_ids_from_config = list(range(NUM_TASKS)) if NUM_TASKS > 0 else []
-                            else:
-                                task_ids_from_config = loaded_task_ids_raw
-                except Exception as e: tqdm.write(f" E: reading config '{config_path}': {e}. Using default/derived task IDs.");
+        # Use a multiprocessing pool to load data in parallel
+        with multiprocessing.Pool() as pool:
+            results_iterator = pool.imap_unordered(process_run_directory_wrapper, tasks)
             
-            current_num_tasks_for_run = len(task_ids_from_config)
+            for result in tqdm(results_iterator, total=len(tasks), desc=f"Scanning Dirs ({CURRENT_SETTING_NAME.upper()})", unit="dir", ncols=100, position=0):
+                if result['status'] == 'processed':
+                    setup_type = result['setup_type']
+                    run_data = result['data']
+                    
+                    # Aggregate the data from the worker process
+                    results_data[setup_type]['overall_avg'].extend(run_data.get('overall_avg', []))
+                    results_data[setup_type]['avg_reward'].extend(run_data.get('avg_reward', []))
+                    for task_idx, data_list in run_data.get('per_task_success', {}).items():
+                        results_data[setup_type]['per_task_success'][task_idx].extend(data_list)
+                    for task_idx, data_list in run_data.get('per_task_reward', {}).items():
+                        results_data[setup_type]['per_task_reward'][task_idx].extend(data_list)
 
-
-            event_file_path = None
-            for p_dir_opt in [os.path.join(item_path, "summaries"), item_path]:
-                if os.path.isdir(p_dir_opt):
-                    try:
-                        event_files = [f for f in os.listdir(p_dir_opt) if f.startswith("events.out.tfevents")]
-                        if event_files: event_file_path = os.path.join(p_dir_opt, sorted(event_files)[-1]); break
-                    except Exception as e: tqdm.write(f" W: Accessing '{p_dir_opt}' for {item_name}: {e}.")
-            if event_file_path is None: tqdm.write(f" W: No event file for '{item_name}'. Skipping."); skipped_runs_count += 1; continue
-
-            run_data_loaded_flag = False
-            try:
-                ea = event_accumulator.EventAccumulator(event_file_path, size_guidance={'scalars': 0}, purge_orphaned_data=True)
-                ea.Reload(); all_scalar_tags = ea.Tags().get("scalars", [])
-            except Exception as e:
-                tqdm.write(f" E: Loading EventAccumulator for '{item_name}': {e}. Skipping run."); skipped_runs_count +=1; continue
-            if not all_scalar_tags: tqdm.write(f" W: No scalars in event file for {item_name}."); skipped_runs_count +=1; continue
-
-            if 'grpo' in item_name.lower():
-                HORIZON = 150
-
-            overall_s_tag = "Episode/average_task_success_rate"
-            if overall_s_tag in all_scalar_tags:
-                scalar_events = ea.Scalars(overall_s_tag)
-                if scalar_events:
-                    df_overall_s = pd.DataFrame({'success': [x.value for x in scalar_events], 'frame': [x.step * num_envs * HORIZON for x in scalar_events]})
-                    if not df_overall_s.empty: results_data[setup_type]['overall_avg'].append(df_overall_s); run_data_loaded_flag = True
-
-            agg_r_tag = "rewards/step"
-            if agg_r_tag in all_scalar_tags:
-                scalar_events_agg_r = ea.Scalars(agg_r_tag)
-                if scalar_events_agg_r:
-                    df_agg_r = pd.DataFrame({'value': [x.value for x in scalar_events_agg_r], 'frame': [x.step for x in scalar_events_agg_r]})
-                    if not df_agg_r.empty: results_data[setup_type]['avg_reward'].append(df_agg_r); run_data_loaded_flag = True
-            
-            if current_num_tasks_for_run > 0 and task_ids_from_config:
-                for task_num_idx, actual_task_id in enumerate(task_ids_from_config):
-                    s_tag_task = f"Episode/task_{actual_task_id}_success"
-                    if s_tag_task in all_scalar_tags:
-                        scalar_events_s_task = ea.Scalars(s_tag_task)
-                        if scalar_events_s_task:
-                            df_s_task = pd.DataFrame({'success': [x.value for x in scalar_events_s_task], 'frame': [x.step * num_envs * HORIZON for x in scalar_events_s_task]})
-                            if not df_s_task.empty: results_data[setup_type]['per_task_success'][task_num_idx].append(df_s_task)
-                    r_tag_task = f"Episode/task_{actual_task_id}_reward"
-                    if r_tag_task in all_scalar_tags:
-                        scalar_events_r_task = ea.Scalars(r_tag_task)
-                        if scalar_events_r_task:
-                            df_r_task = pd.DataFrame({'value': [x.value for x in scalar_events_r_task], 'frame': [x.step for x in scalar_events_r_task]})
-                            if not df_r_task.empty: results_data[setup_type]['per_task_reward'][task_num_idx].append(df_r_task)
-
-            if run_data_loaded_flag:
-                processed_runs_total += 1; setup_run_counts[setup_type] += 1
-            else: tqdm.write(f" W: No aggregate data ('{overall_s_tag}' or '{agg_r_tag}') extracted from '{item_name}'."); skipped_runs_count += 1
+                    setup_run_counts[setup_type] += 1
+                    processed_runs_total += 1
+                else:
+                    skipped_runs_count += 1
+                    if result['status'] == 'skipped_env_mismatch':
+                        tqdm.write(f"Skipping {result['item_name']}: Env count {result['num_envs']} != required {result['required']}.")
+                    elif result['status'] not in ['skipped_no_match', 'skipped_no_config']:
+                        # Optionally log other non-critical skips
+                        # tqdm.write(f"Skipping {result['item_name']}: {result['status']}")
+                        pass
 
         print(f"\n--- Processing Summary for {CURRENT_SETTING_NAME.upper()} ---")
         if processed_runs_total == 0 :
