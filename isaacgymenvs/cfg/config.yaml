@@ -94,6 +94,4 @@ fixed: True # set to True to fix the object and target positions across resets i
 nstep: 1
 gradient_steps_per_itr: 1
 batch_size: 256
-critic_tau: 0.005
-replay_buffer_size: 1000000
 minibatch_size: 32678

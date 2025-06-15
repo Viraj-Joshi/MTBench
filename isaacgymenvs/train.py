@@ -98,7 +98,7 @@ def launch_rlg_hydra(cfg: DictConfig):
     from isaacgymenvs.learning import mt_sac_agent, mt_sac_agent_gradmani
     from isaacgymenvs.learning import pqn_agent
     from isaacgymenvs.learning import grpo_agent
-    import isaacgymenvs
+    from isaacgymenvs.learning import td3_agent 
 
     from isaacgymenvs.learning.networks import soft_modularization_sac_builder
     from isaacgymenvs.learning.networks import soft_modularization_a2c_builder
@@ -108,8 +108,9 @@ def launch_rlg_hydra(cfg: DictConfig):
     from isaacgymenvs.learning.networks import multihead_a2c_builder
     from isaacgymenvs.learning.networks import paco_a2c_builder
     from isaacgymenvs.learning.networks import grpo_builder
+    from isaacgymenvs.learning.networks import td3_builder
     
-
+    import isaacgymenvs
 
     time_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     run_name = f"{cfg.wandb_name}_{time_str}"
@@ -225,13 +226,18 @@ def launch_rlg_hydra(cfg: DictConfig):
         runner.algo_factory.register_builder('famo_a2c', lambda **kwargs : mt_a2c_agent.FAMOA2CAgent(**kwargs))
         runner.algo_factory.register_builder('mt_sac', lambda **kwargs : mt_sac_agent.MTSACAgent(**kwargs))
         runner.algo_factory.register_builder('mt_sac_soft_modularization', lambda **kwargs : mt_sac_agent.MTSACSoftModularizationAgent(**kwargs))
+        runner.algo_factory.register_builder('fast_td3', lambda **kwargs : td3_agent.FastTD3Agent(**kwargs))
+        runner.algo_factory.register_builder('mt_fast_td3', lambda **kwargs : td3_agent.MTFastTD3Agent(**kwargs))
 
         model_builder.register_model('mt_continuous_a2c_logstd', lambda network, **kwargs : mt_models.MTModelA2CContinuousLogStd(network))
         model_builder.register_model('mt_continuous_grpo_logstd', lambda network, **kwargs : mt_models.MTModelGRPOContinuousLogStd(network))
         model_builder.register_model('mt_continuous_sac', lambda network, **kwargs : mt_models.MTModelSACContinuous(network))
+        model_builder.register_model('fast_td3', lambda network, **kwargs : mt_models.ModelFastTD3(network))
+        model_builder.register_model('mt_fast_td3', lambda network, **kwargs : mt_models.MTModelFastTD3Continuous(network))
         model_builder.register_model('parallel_q', lambda network, **kwargs : mt_models.ModelParallelQ(network))
         model_builder.register_model('mt_parallel_q', lambda network, **kwargs : mt_models.MTModelParallelQ(network))
         
+        model_builder.register_network('fast_td3_a2c', lambda **kwargs : td3_builder.FastTD3Builder(**kwargs))
         model_builder.register_network('grpo', lambda **kwargs : grpo_builder.GRPOBuilder())
         model_builder.register_network('soft_modularization_sac', lambda **kwargs : soft_modularization_sac_builder.SoftModularizedSACBuilder())
         model_builder.register_network('soft_modularization_ppo', lambda **kwargs : soft_modularization_a2c_builder.SoftModularizedA2CBuilder())

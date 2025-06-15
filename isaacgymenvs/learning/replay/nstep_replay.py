@@ -25,7 +25,8 @@ class NStepReplay:
     @torch.no_grad()
     def add_to_buffer(self, obs, actions, rewards, next_obs, dones):
         if self.nstep > 1:
-            obs_list, action_list, reward_list, next_obs_list, done_list = list(), list(), list(), list(), list()
+            # Add a list for the new value
+            obs_list, action_list, reward_list, next_obs_list, done_list, effective_steps_list = [], [], [], [], [], []
             for i in range(obs.shape[1]):
                 self.nstep_buf_obs = self.fifo_shift(self.nstep_buf_obs, obs[:, i])
                 self.nstep_buf_next_obs = self.fifo_shift(self.nstep_buf_next_obs, next_obs[:, i])
@@ -38,17 +39,24 @@ class NStepReplay:
 
                 obs_list.append(self.nstep_buf_obs[:, 0])
                 action_list.append(self.nstep_buf_action[:, 0])
-                reward, next_ob, done = compute_nstep_return(nstep_buf_next_obs=self.nstep_buf_next_obs,
-                                                             nstep_buf_done=self.nstep_buf_done,
-                                                             nstep_buf_reward=self.nstep_buf_reward,
-                                                             gamma_array=self.gamma_array)
+                
+                # Get the new value from the compute function
+                reward, next_ob, done, effective_steps = compute_nstep_return(nstep_buf_next_obs=self.nstep_buf_next_obs,
+                                                                               nstep_buf_done=self.nstep_buf_done,
+                                                                               nstep_buf_reward=self.nstep_buf_reward,
+                                                                               gamma_array=self.gamma_array)
                 reward_list.append(reward)
                 next_obs_list.append(next_ob)
                 done_list.append(done)
-                
-            return torch.cat(obs_list), torch.cat(action_list), torch.cat(reward_list), torch.cat(next_obs_list), torch.cat(done_list)
+                # Append it to its list
+                effective_steps_list.append(effective_steps)
+            
+            # Return the concatenated tensor
+            return torch.cat(obs_list), torch.cat(action_list), torch.cat(reward_list), torch.cat(next_obs_list), torch.cat(done_list), torch.cat(effective_steps_list)
         else:
-            return obs, actions, rewards, next_obs, dones
+            # For nstep=1, effective steps is always 1
+            effective_steps = torch.ones_like(rewards)
+            return obs, actions, rewards, next_obs, dones, effective_steps
 
     def fifo_shift(self, queue, new_tensor):
         queue = torch.cat((queue[:, 1:], new_tensor.unsqueeze(1)), dim=1)
@@ -70,7 +78,13 @@ def compute_nstep_return(nstep_buf_next_obs, nstep_buf_done, nstep_buf_reward, g
 
     mask = torch.ones(buf_done.shape, device=buf_done.device, dtype=torch.bool)
     mask[buf_done_envs] = torch.arange(mask.shape[1],
-                                       device=buf_done.device) <= buf_done_steps[buf_done_envs][:, None]
+                                      device=buf_done.device) <= buf_done_steps[buf_done_envs][:, None]
+    
+    # Calculate effective_n_steps by summing the mask
+    effective_n_steps = mask.sum(dim=1).unsqueeze(-1)
+
     discounted_rewards = nstep_buf_reward * gamma_array
     discounted_rewards = (discounted_rewards * mask.unsqueeze(-1)).sum(1)
-    return discounted_rewards, next_obs, done
+    
+    # Return the new value
+    return discounted_rewards, next_obs, done, effective_n_steps

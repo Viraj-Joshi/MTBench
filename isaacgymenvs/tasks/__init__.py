@@ -32,6 +32,8 @@ from isaacgymenvs.tasks.locomotion.legged_base import LeggedRobot
 
 from isaacgymenvs.tasks.franka.vec_task import FrankaBaseEnvV2
 
+from isaacgymenvs.tasks.shadow_hand import ShadowHand
+
 
 # Mappings from strings to environments
 from collections import defaultdict
@@ -43,4 +45,6 @@ isaacgym_task_map.update({
     'meta-world-v2': FrankaBaseEnvV2,
     # Go1
     'go1-benchmark': LeggedRobot,
+    # shadow hand
+    'ShadowHand': ShadowHand,
 })

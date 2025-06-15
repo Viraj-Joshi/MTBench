@@ -8,6 +8,7 @@ from rl_games.algos_torch.models import ModelA2CContinuousLogStd, ModelSACContin
 from rl_games.algos_torch.running_mean_std import RunningMeanStd, RunningMeanStdObs
 from rl_games.algos_torch.sac_helper import SquashedNormal
 import rl_games.common.divergence as divergence
+from rl_games.algos_torch.models import BaseModelNetwork
 
 """ class MTRunningMeanStd(nn.Module):
     def __init__(self, insize, epsilon=1e-05, per_channel=False, norm_only=False):
@@ -191,8 +192,77 @@ class MTModelSACContinuous(ModelSACContinuous):
             mu, sigma = self.sac_network(input_dict)
             dist = SquashedNormal(mu, sigma)
             return dist
+    
+class ModelFastTD3(BaseModel):
 
-from rl_games.algos_torch.models import BaseModelNetwork
+    def __init__(self, network):
+        BaseModel.__init__(self, 'td3')
+        self.network_builder = network
+    
+    class Network(BaseModelNetwork):
+        def __init__(self, td3_network,**kwargs):
+            BaseModelNetwork.__init__(self,**kwargs)
+            self.td3_network = td3_network
+            self.kwargs = kwargs
+
+        def norm_obs(self, observation):
+            with torch.no_grad():
+                return self.running_mean_std(observation) if self.normalize_input else observation
+            
+        def critic(self, obs, action):
+            return self.td3_network.critic(obs, action)
+
+        def critic_target(self, obs, action):
+            return self.td3_network.critic_target(obs, action)
+
+        def actor(self, obs):
+            return self.td3_network.actor(obs)
+        
+        def is_rnn(self):
+            return False
+
+        def forward(self, input_dict):
+            return self.td3_network(input_dict)
+
+class MTModelFastTD3Continuous(BaseModel):
+
+    def __init__(self, network):
+        ModelFastTD3.__init__(self, network)
+    
+    def build(self, config):
+        obs_shape = config['input_shape']
+        normalize_value = config['normalize_value']
+        normalize_input = config['normalize_input']
+        value_size = config.get('value_size', 1)
+        if 'task_indices' not in config:
+            raise KeyError("task_indices not found for a multi task model")
+        task_indices = config["task_indices"]
+        task_embedding_dim = torch.unique(task_indices).shape[0]
+        return self.Network(self.network_builder.build(self.model_class, **config), obs_shape=obs_shape,
+            normalize_value=normalize_value, normalize_input=normalize_input, value_size=value_size, task_embedding_dim=task_embedding_dim)
+
+    class Network(MTModelNetwork):
+        def __init__(self, sac_network,**kwargs):
+            MTModelNetwork.__init__(self,**kwargs)
+            self.td3_network = sac_network
+            self.kwargs = kwargs
+
+        def critic(self, obs, action):
+            return self.td3_network.critic(obs, action)
+
+        def critic_target(self, obs, action):
+            return self.td3_network.critic_target(obs, action)
+
+        def actor(self, obs):
+            return self.td3_network.actor(obs)
+        
+        def is_rnn(self):
+            return False
+
+        def forward(self, input_dict):
+            return self.td3_network(input_dict)
+    
+
 class ModelParallelQ(BaseModel):
 
     def __init__(self, network):
