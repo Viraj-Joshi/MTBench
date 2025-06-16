@@ -324,7 +324,7 @@ class MTSACAgent(SACAgent):
         return critic_loss.detach(), critic1_loss.detach(), critic2_loss.detach()
 
     def update(self, step):
-        obs, action, reward, next_obs, done = self.replay_buffer.sample_batch(self.batch_size)
+        obs, action, reward, next_obs, done, _ = self.replay_buffer.sample_batch(self.batch_size)
         not_done = 1-done
 
         task_indices = torch.argmax(obs[:,-self.task_embedding_dim:], dim=1)
@@ -514,7 +514,7 @@ class MTSACSoftModularizationAgent(MTSACAgent):
         return actor_loss.detach(), entropy.detach(), self.alpha(task_indices).mean().detach(), alpha_loss
     
     def update(self, step):
-        obs, action, reward, next_obs, done = self.replay_buffer.sample_batch(self.batch_size)
+        obs, action, reward, next_obs, done, _ = self.replay_buffer.sample_batch(self.batch_size)
         task_indices = torch.argmax(obs[:,-self.task_embedding_dim:], dim=1)
         not_done = 1-done
 

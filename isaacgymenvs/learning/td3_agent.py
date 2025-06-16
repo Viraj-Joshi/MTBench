@@ -17,6 +17,7 @@ from rl_games.algos_torch import  model_builder
 from isaacgymenvs.learning.replay.nstep_replay import NStepReplay
 from isaacgymenvs.learning.replay.simple_replay import ReplayBuffer
 
+import matplotlib.pyplot as plt
 class FastTD3Agent(BaseAlgorithm):
 
     def __init__(self, base_name, params):
@@ -92,6 +93,17 @@ class FastTD3Agent(BaseAlgorithm):
                                                  lr=float(self.config["critic_lr"]),
                                                  betas=self.config.get("critic_betas", [0.9, 0.999]),
                                                  weight_decay=self.config.get("weight_decay", 0.0))
+        
+        # self.critic_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        #     self.critic_optimizer,
+        #     T_max=self.max_epochs,
+        #     eta_min=args.critic_learning_rate_end,  # Decay to 10% of initial lr
+        # )
+        # self.actor_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        #     self.actor_optimizer,
+        #     T_max=self.max_epochs,
+        #     eta_min=args.actor_learning_rate_end,  # Decay to 10% of initial lr
+        # )
         
         
         obs_dim = self.env_info["observation_space"].shape[0]
@@ -280,7 +292,7 @@ class FastTD3Agent(BaseAlgorithm):
         with autocast(
             device_type=self.amp_device_type, dtype=self.amp_dtype, enabled=self.amp_enabled
         ):
-            
+            # compute target actions with noise
             clipped_noise = torch.randn_like(action)
             clipped_noise = clipped_noise.mul(self.policy_noise).clamp(
                 -self.noise_clip, self.noise_clip
@@ -302,9 +314,9 @@ class FastTD3Agent(BaseAlgorithm):
                     self.model.td3_network.critic_target.projection(
                         next_obs,
                         next_action,
-                        reward,
-                        bootstrap,
-                        discount,
+                        reward.squeeze(-1),
+                        bootstrap.squeeze(-1),
+                        discount.squeeze(-1),
                     )
                 )
                 qf1_next_target_value = self.model.td3_network.critic_target.get_value(qf1_next_target_projected)
@@ -377,15 +389,41 @@ class FastTD3Agent(BaseAlgorithm):
             target_param.data.copy_(tau * param.data +
                                     (1.0 - tau) * target_param.data)
 
-    def update(self, gradient_step):
-        obs, action, reward, next_obs, done, effective_n_steps, = self.replay_buffer.sample_batch(self.batch_size)
+    def update(self, epoch_num, gradient_step):
+        obs, action, reward, next_obs, done, effective_n_steps = self.replay_buffer.sample_batch(self.batch_size)
         not_done = ~(done.bool())
 
         obs = self.preproc_obs(obs)
         next_obs = self.preproc_obs(next_obs)
         critic_loss, critic1_loss, critic2_loss = self.update_critic(obs, action, reward, next_obs, not_done, effective_n_steps)
         
-        if gradient_step % self.actor_update_freq == 0:
+        # with torch.no_grad():
+        #     if epoch_num % 10 == 0 and gradient_step == self.gradient_steps_per_itr - 1:
+        #         q1_logits, q2_logits = self.model.td3_network.critic(obs, action)
+        #         q1_probs = F.softmax(q1_logits, dim=1).detach().cpu().numpy()
+        #         q2_probs = F.softmax(q2_logits, dim=1).detach().cpu().numpy()
+        #         # Get the support (the x-axis values)
+        #         support = self.model.td3_network.critic.q_support.cpu().numpy()
+
+        #         # 5. Plot the distributions
+        #         plt.figure(figsize=(14, 7))
+        #         plt.title('Critic Output Distribution for a Single Sample')
+
+        #         # We access the first element of the batch with index [0]
+        #         plt.bar(support, q1_probs[0], alpha=0.7, label='QNet1 Distribution')
+        #         plt.bar(support, q2_probs[0], alpha=0.5, label='QNet2 Distribution')
+
+        #         plt.xlabel('Q-value')
+        #         plt.ylabel('Probability')
+        #         plt.legend()
+        #         plt.grid(True, which='both', linestyle='--', linewidth=0.5)
+        #         plt.show()
+
+        #         # To save the figure, uncomment the following line:
+        #         plt.savefig(f'debug/debug2/critic_distribution_single_sample_{epoch_num}.png')
+        #         plt.close()
+                
+        if gradient_step % self.actor_update_freq == 1:
             actor_loss = self.update_actor(obs)
         else:
             actor_loss = torch.zeros((self.num_actors), dtype=torch.float32, device=self._device)
@@ -506,19 +544,18 @@ class FastTD3Agent(BaseAlgorithm):
 
         for s in range(horizon):
             self.set_eval()
-            if random_exploration:
-                print(f"Warmup Step: {s}")
-                action = torch.rand((self.num_actors, *self.env_info["action_space"].shape), device=self._device) * 2.0 - 1.0
-            else:
-                with torch.no_grad():
+            with torch.no_grad(),autocast(
+                    device_type=self.amp_device_type, dtype=self.amp_dtype, enabled=self.amp_enabled
+            ):
+                if random_exploration:
+                    print(f"Warmup Step: {s}")
+                    action = torch.rand((self.num_actors, *self.env_info["action_space"].shape), device=self._device) * 2.0 - 1.0
+                else:
                     action = self.act(obs.float(), self.env_info["action_space"].shape)
 
-            step_start = time.time()
-            with torch.no_grad(), autocast(
-                device_type=self.amp_device_type, dtype=self.amp_dtype, enabled=self.amp_enabled
-            ):
+                step_start = time.time()
                 next_obs, rewards, dones, infos = self.env_step(action)
-            step_end = time.time()
+                step_end = time.time()
 
             self.current_rewards += rewards
             self.current_lengths += 1
@@ -558,6 +595,7 @@ class FastTD3Agent(BaseAlgorithm):
 
         traj_rewards = traj_rewards.reshape(self.num_actors,horizon, 1)
         traj_dones = traj_dones.reshape(self.num_actors, horizon, 1)
+        assert self.nstep >= horizon, "nstep needs to be greater than or equal to horizon"
         data = self.n_step_buffer.add_to_buffer(traj_obs, traj_actions, traj_rewards, traj_next_obs, traj_dones)
 
         self.replay_buffer.add_to_buffer(data)
@@ -566,7 +604,7 @@ class FastTD3Agent(BaseAlgorithm):
             self.set_train()
             update_time_start = time.time()
             for gradient_step in range(self.gradient_steps_per_itr):
-                actor_loss_info, critic1_loss, critic2_loss = self.update(self.epoch_num)
+                actor_loss_info, critic1_loss, critic2_loss = self.update(self.epoch_num, gradient_step)
             self.num_updates += self.gradient_steps_per_itr
             update_time_end = time.time()
             update_time = update_time_end - update_time_start
@@ -576,6 +614,8 @@ class FastTD3Agent(BaseAlgorithm):
             critic2_loss_list.append(critic2_loss)
         else:
             update_time = 0
+
+        total_update_time += update_time
 
         total_time_end = time.time()
         total_time = total_time_end - total_time_start

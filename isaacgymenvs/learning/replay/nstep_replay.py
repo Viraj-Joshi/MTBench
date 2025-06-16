@@ -25,7 +25,6 @@ class NStepReplay:
     @torch.no_grad()
     def add_to_buffer(self, obs, actions, rewards, next_obs, dones):
         if self.nstep > 1:
-            # Add a list for the new value
             obs_list, action_list, reward_list, next_obs_list, done_list, effective_steps_list = [], [], [], [], [], []
             for i in range(obs.shape[1]):
                 self.nstep_buf_obs = self.fifo_shift(self.nstep_buf_obs, obs[:, i])
@@ -40,7 +39,6 @@ class NStepReplay:
                 obs_list.append(self.nstep_buf_obs[:, 0])
                 action_list.append(self.nstep_buf_action[:, 0])
                 
-                # Get the new value from the compute function
                 reward, next_ob, done, effective_steps = compute_nstep_return(nstep_buf_next_obs=self.nstep_buf_next_obs,
                                                                                nstep_buf_done=self.nstep_buf_done,
                                                                                nstep_buf_reward=self.nstep_buf_reward,
@@ -48,7 +46,6 @@ class NStepReplay:
                 reward_list.append(reward)
                 next_obs_list.append(next_ob)
                 done_list.append(done)
-                # Append it to its list
                 effective_steps_list.append(effective_steps)
             
             # Return the concatenated tensor

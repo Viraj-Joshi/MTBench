@@ -1,15 +1,14 @@
 #!/bin/bash
 # 128 gradient updates turns into 3 hours per run
 
-
-for i in 51
+e=4096
+for i in 42
 do
 	python isaacgymenvs/train.py \
 	task_id=[4,16,17,18,28,31,38,40,48,49] \
-	exempted_tasks=[] \
 	task_counts=[410,410,410,410,410,410,409,409,409,409] \
-	num_envs=4096 \
-	experiment=vanilla_sac_rand_long_seed_$i \
+	num_envs=$e \
+	experiment=sac_vanilla_mt10_rand_envs_${e}_seed_${i} \
 	task=meta-world-v2 \
 	train=meta-world-mt-SAC \
 	fixed=False \
@@ -23,9 +22,5 @@ do
 	termination_on_success=False \
 	max_iterations=49000 \
 	headless=True \
-	nstep=16 \
-	gradient_steps_per_itr=32 \
-	replay_buffer_size=5000000 \
-	critic_tau=.01 \
-	batch_size=8192
+	gradient_steps_per_itr=32
 done
