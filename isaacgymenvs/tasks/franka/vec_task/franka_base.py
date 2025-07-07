@@ -191,6 +191,8 @@ class FrankaBaseEnvV2(VecTask):
         self.termination_on_success = self.cfg["env"]["termination_on_success"]
         self.reward_scale = self.cfg["env"]["reward_scale"]
         self.exempted_init_at_random_progress_tasks = self.cfg["env"]["exemptedInitAtRandomProgressTasks"]
+        self.isSeperateEvaluation = self.cfg["env"]["isSeperateEvaluation"]
+        self.evalInterval = self.cfg["env"]["evalInterval"]
         assert sum(self.task_env_count) == self.cfg["env"]["numEnvs"], \
             f"Sum of taskEnvCount {self.task_env_count} should be equal to num_envs {self.cfg['env']['numEnvs']}"
         assert len(self.task_idx) == len(self.task_env_count), \

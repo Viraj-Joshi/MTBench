@@ -17,6 +17,8 @@ from rl_games.algos_torch import  model_builder
 from isaacgymenvs.learning.replay.nstep_replay import NStepReplay
 from isaacgymenvs.learning.replay.simple_replay import ReplayBuffer
 
+import wandb
+
 import matplotlib.pyplot as plt
 class FastTD3Agent(BaseAlgorithm):
 
@@ -216,7 +218,7 @@ class FastTD3Agent(BaseAlgorithm):
         self.current_rewards = torch.zeros(batch_size, dtype=torch.float32, device=self._device)
         self.current_lengths = torch.zeros(batch_size, dtype=torch.long, device=self._device)
 
-        self.dones = torch.zeros((batch_size,), dtype=torch.uint8, device=self._device)
+        self.dones = None
 
     @property
     def device(self):
@@ -351,7 +353,7 @@ class FastTD3Agent(BaseAlgorithm):
         self.scaler.step(self.critic_optimizer)
         self.scaler.update()
 
-        return qf_loss.detach(), qf1_loss.detach(), qf2_loss.detach()
+        return qf_loss.detach(), qf1_loss.detach(), qf2_loss.detach(), critic_grad_norm.detach()
 
     def update_actor(self, obs):
         with autocast(
@@ -382,7 +384,7 @@ class FastTD3Agent(BaseAlgorithm):
         for p in self.model.td3_network.critic.parameters():
             p.requires_grad = True
 
-        return actor_loss.detach()
+        return actor_loss.detach(), actor_grad_norm.detach()
 
     def soft_update_params(self, net, target_net, tau):
         for param, target_param in zip(net.parameters(), target_net.parameters()):
@@ -395,7 +397,7 @@ class FastTD3Agent(BaseAlgorithm):
 
         obs = self.preproc_obs(obs)
         next_obs = self.preproc_obs(next_obs)
-        critic_loss, critic1_loss, critic2_loss = self.update_critic(obs, action, reward, next_obs, not_done, effective_n_steps)
+        critic_loss, critic1_loss, critic2_loss, critic_grad_norm = self.update_critic(obs, action, reward, next_obs, not_done, effective_n_steps)
         
         # with torch.no_grad():
         #     if epoch_num % 10 == 0 and gradient_step == self.gradient_steps_per_itr - 1:
@@ -424,14 +426,15 @@ class FastTD3Agent(BaseAlgorithm):
         #         plt.close()
                 
         if gradient_step % self.actor_update_freq == 1:
-            actor_loss = self.update_actor(obs)
+            actor_loss, actor_grad_norm = self.update_actor(obs)
         else:
-            actor_loss = torch.zeros((self.num_actors), dtype=torch.float32, device=self._device)
+            actor_loss = None
+            actor_grad_norm = None
 
         actor_loss_info = actor_loss
         self.soft_update_params(self.model.td3_network.critic, self.model.td3_network.critic_target,
                                      self.critic_tau)
-        return actor_loss_info, critic1_loss, critic2_loss
+        return actor_loss_info, critic1_loss, critic2_loss, critic_grad_norm, actor_grad_norm
 
     def preproc_obs(self, obs):
         if isinstance(obs, dict):
@@ -499,9 +502,9 @@ class FastTD3Agent(BaseAlgorithm):
 
         return obs
 
-    def act(self, obs, action_dim):
+    def act(self, obs):
         obs = self.preproc_obs(obs)
-        action = self.model.actor(obs)
+        action = self.model.td3_network.actor.explore(obs,self.dones)
 
         action = action.clamp(*self.action_range)
         assert action.ndim == 2
@@ -519,6 +522,84 @@ class FastTD3Agent(BaseAlgorithm):
         self.mean_rewards = self.last_mean_rewards = -1000000000
         self.algo_observer.after_clear_stats()
 
+    def evaluate(self):
+        """
+        Evaluates the actor on using a deterministic actor.
+        A single rollout is performed across each parallel environment
+        Returns:
+            A dictionary containing aggregated evaluation metrics.
+        """
+        print("\n--- Starting Evaluation ---")
+
+        # Reset all parallel environments
+        eval_env = self.vec_env.env
+        eval_env.reset_idx(torch.arange(self.num_actors, device=self.device))
+        # call compute observations to refresh physics tensors and then call env reset to get observations
+        eval_env.compute_observations()
+        obs = self.env_reset()
+
+        
+        if isinstance(obs, dict):
+            obs = obs['obs']
+
+        # reset logging from before evaluate was called
+        eval_env.cumulatives['reward'] = torch.zeros(self.num_actors, device=self.device)
+        eval_env.cumulatives['success'] = torch.zeros(self.num_actors, device=self.device)
+
+        # Initialize tensors to store episode rewards and successes
+        episode_rewards = torch.zeros(self.num_actors, device=self.device)
+        success_count_per_episode = torch.zeros(self.num_actors, device=self.device)
+
+        # --- Run one full rollout for all parallel environments ---
+        for _ in range(eval_env.max_episode_length):
+            with torch.no_grad(), autocast(
+                device_type=self.amp_device_type, dtype=self.amp_dtype, enabled=self.amp_enabled
+            ):
+                obs = self.preproc_obs(obs)
+                actions = self.model.actor(obs) # no noise in evaluation
+
+                next_obs, rewards, dones, infos = self.env_step(actions)
+
+            if 'episode' in infos:
+                success_count_per_episode = infos['episode']['success_count_per_episode']
+
+            episode_rewards += rewards.squeeze(-1)
+            obs = next_obs.copy()  
+        
+        # --- Aggregate and Report Final Metrics ---
+        eval_metrics = {}
+        print("--- Evaluation Summary ---")
+        
+        # Iterate through each task
+        for task_idx in torch.unique(self.all_task_indices):
+            task_name = self.ordered_task_names[task_idx.item()]
+            
+            # Find all parallel environments that correspond to this task
+            task_env_indices = (self.all_task_indices == task_idx).nonzero(as_tuple=False).squeeze(-1)
+
+            if task_env_indices.numel() > 0:
+                # Calculate the mean success and reward for this task's trials
+                task_success_rate = (success_count_per_episode[task_env_indices]>0).float().mean().item()
+                task_avg_reward = episode_rewards[task_env_indices].mean().item()
+                
+                # Store metrics for logging
+                eval_metrics[f'eval/{task_name}/success_rate'] = task_success_rate
+                eval_metrics[f'eval/{task_name}/avg_reward'] = task_avg_reward
+                
+                print(f"Task: {task_name:<25} | Avg Success Rate: {task_success_rate:.4f} | Avg Reward: {task_avg_reward:.4f}")
+        
+        # Calculate overall average success rate across all tasks and trials
+        overall_avg_success = (success_count_per_episode>0).float().mean().item()
+        eval_metrics['eval/overall_success_rate'] = overall_avg_success
+        eval_metrics['eval/overall_avg_reward'] = episode_rewards.mean().item()
+
+        print(f"\nOverall Average Success Rate: {overall_avg_success:.4f}\n")
+        print(f"Overall Average Reward: {episode_rewards.mean().item():.4f}\n")
+
+        print("\n--- Evaluation Complete ---\n")
+
+        return eval_metrics
+
     def play_steps(self, horizon, random_exploration):
         total_time_start = time.time()
         total_update_time = 0
@@ -527,6 +608,10 @@ class FastTD3Agent(BaseAlgorithm):
         actor_losses = []
         critic1_loss_list = []
         critic2_loss_list = []
+        critic_grad_norm_list = []
+        actor_grad_norm_list = []
+        train_metrics = {}
+        eval_metrics = {}
 
         obs_dim = self.env_info["observation_space"].shape[0]
         action_dim = self.env_info["action_space"].shape[0]
@@ -535,6 +620,8 @@ class FastTD3Agent(BaseAlgorithm):
         traj_rewards = torch.empty((self.num_actors, horizon), device=self.device)
         traj_next_obs = torch.empty((self.num_actors, horizon) + (obs_dim,), device=self.device)
         traj_dones = torch.empty((self.num_actors, horizon), device=self.device)
+
+        success_count_per_episode = torch.zeros(self.num_actors, device=self.device)
 
         obs = self.obs
         if isinstance(obs, dict):
@@ -551,10 +638,14 @@ class FastTD3Agent(BaseAlgorithm):
                     print(f"Warmup Step: {s}")
                     action = torch.rand((self.num_actors, *self.env_info["action_space"].shape), device=self._device) * 2.0 - 1.0
                 else:
-                    action = self.act(obs.float(), self.env_info["action_space"].shape)
+                    action = self.act(obs.float())
 
                 step_start = time.time()
                 next_obs, rewards, dones, infos = self.env_step(action)
+                if 'episode' in infos:
+                    success_count_per_episode = infos['episode']['success_count_per_episode']
+
+                self.dones = dones
                 step_end = time.time()
 
             self.current_rewards += rewards
@@ -604,14 +695,19 @@ class FastTD3Agent(BaseAlgorithm):
             self.set_train()
             update_time_start = time.time()
             for gradient_step in range(self.gradient_steps_per_itr):
-                actor_loss_info, critic1_loss, critic2_loss = self.update(self.epoch_num, gradient_step)
+                actor_loss_info, critic1_loss, critic2_loss, critic_grad_norm, actor_grad_norm = self.update(self.epoch_num, gradient_step)
+                if gradient_step % self.actor_update_freq == 1:
+                    actor_grad_norm_list.append(actor_grad_norm)
+                    self.extract_actor_stats(actor_losses, actor_loss_info)
+            
             self.num_updates += self.gradient_steps_per_itr
             update_time_end = time.time()
             update_time = update_time_end - update_time_start
 
-            self.extract_actor_stats(actor_losses, actor_loss_info)
             critic1_loss_list.append(critic1_loss)
             critic2_loss_list.append(critic2_loss)
+            critic_grad_norm_list.append(critic_grad_norm)
+            
         else:
             update_time = 0
 
@@ -621,7 +717,52 @@ class FastTD3Agent(BaseAlgorithm):
         total_time = total_time_end - total_time_start
         play_time = total_time - total_update_time
 
-        return step_time, play_time, total_update_time, total_time, actor_losses, critic1_loss_list, critic2_loss_list
+        if self.vec_env.env.isSeperateEvaluation and self.epoch_num % self.vec_env.env.evalInterval == 0: 
+            self.set_eval()
+            eval_metrics = self.evaluate()
+            # hacky way to reset the environment after evaluation
+            self.vec_env.env.reset_idx(torch.arange(self.num_actors, device=self.device))
+            self.vec_env.env.compute_observations()
+            self.obs = self.env_reset()
+
+            # randomize progress_buf again
+            total_count = 0
+            for tid, env_count in zip(self.vec_env.env.task_idx, self.vec_env.env.task_env_count):
+                self.vec_env.env.env_id_to_task_id[total_count:total_count+env_count] = [tid for _ in range(env_count)]
+                if not self.vec_env.env.init_at_random_progress or tid in self.vec_env.env.exempted_init_at_random_progress_tasks:
+                    self.vec_env.env.progress_buf[total_count:total_count+env_count] = 0
+                else:
+                    self.vec_env.env.progress_buf[total_count:total_count+env_count] = torch.randint_like(self.vec_env.env.progress_buf[total_count:total_count+env_count], high=int(self.vec_env.env.max_episode_length))
+            
+                total_count += env_count
+            
+            self.game_rewards.clear()
+            self.game_lengths.clear()
+            self.mean_rewards = self.last_mean_rewards = -1000000000
+        self.set_train()
+        if 'episode' in infos: 
+            for task_idx in torch.unique(self.all_task_indices):
+                task_name = self.ordered_task_names[task_idx.item()]
+                
+                task_env_indices = (self.all_task_indices == task_idx).nonzero(as_tuple=False).squeeze(-1)
+
+                if task_env_indices.numel() > 0:
+                    task_success_rate = (success_count_per_episode[task_env_indices]>0).float().mean().item()
+                    # task_avg_reward = episode_rewards[task_env_indices].mean().item()
+                    
+                    train_metrics[f'train/{task_name}/success_rate'] = task_success_rate
+                    # train_metrics[f'train/{task_name}/avg_reward'] = task_avg_reward
+                    
+                    # print(f"Task: {task_name:<25} | Avg Success Rate: {task_success_rate:.4f}")
+            
+            overall_avg_success = (success_count_per_episode>0).float().mean().item()
+            train_metrics['train/overall_success_rate'] = overall_avg_success
+            # train_metrics['train/overall_avg_reward'] = episode_rewards.mean().item()
+
+            # print(f"\nOverall Average Success Rate: {overall_avg_success:.4f}\n")
+            # print(f"Overall Average Reward: {episode_rewards.mean().item():.4f}\n")
+
+        return step_time, play_time, total_update_time, total_time, actor_losses, critic1_loss_list, critic2_loss_list, critic_grad_norm_list, actor_grad_norm_list, train_metrics, eval_metrics
 
     def train_epoch(self):
         if self.epoch_num == 1:
@@ -638,7 +779,7 @@ class FastTD3Agent(BaseAlgorithm):
 
         while True:
             self.epoch_num += 1
-            step_time, play_time, update_time, epoch_total_time, actor_losses, critic1_losses, critic2_losses = self.train_epoch()
+            step_time, play_time, update_time, epoch_total_time, actor_losses, critic1_losses, critic2_losses, critic_grad_norms, actor_grad_norms, train_metrics,eval_metrics = self.train_epoch()
 
             total_time += epoch_total_time
 
@@ -659,10 +800,42 @@ class FastTD3Agent(BaseAlgorithm):
             self.writer.add_scalar('performance/step_inference_time', play_time, self.frame)
             self.writer.add_scalar('performance/step_time', step_time, self.frame)
 
-            if self.epoch_num >= self.num_warmup_steps:
+            # after the first epoch, we can start logging metrics
+            if self.epoch_num > 1 :
                 self.writer.add_scalar('losses/a_loss', torch_ext.mean_list(actor_losses).item(), self.frame)
                 self.writer.add_scalar('losses/c1_loss', torch_ext.mean_list(critic1_losses).item(), self.frame)
                 self.writer.add_scalar('losses/c2_loss', torch_ext.mean_list(critic2_losses).item(), self.frame)
+                
+                # add eval metrics
+                for key, value in eval_metrics.items():
+                    self.writer.add_scalar(key, value, self.frame)
+                # wandb.log(
+                #     {   
+                #         "performance/step_inference_rl_update_fps": fps_total,
+                #         "performance/step_inference_fps": fps_step_inference,
+                #         "performance/step_fps": fps_step,
+                #         "performance/rl_update_time": update_time,
+                #         "performance/step_inference_time": play_time,
+                #         "performance/step_time": step_time,
+
+                #         "losses/a_loss": torch_ext.mean_list(actor_losses).item(),
+                #         "losses/c1_loss": torch_ext.mean_list(critic1_losses).item(),
+                #         "losses/c2_loss": torch_ext.mean_list(critic2_losses).item(),
+                #         "losses/critic_grad_norm": torch_ext.mean_list(critic_grad_norms).item(),
+                #         "losses/actor_grad_norm": torch_ext.mean_list(actor_grad_norms).item(),
+                #         "frame": self.frame,
+                #     },
+                #     step=self.frame,
+                # )
+                # if train_metrics:
+                #     wandb.log(
+                #         {   
+                #             **train_metrics,
+                #         },
+                #         step=self.frame,
+                #     )
+            
+                
 
             self.writer.add_scalar('info/epochs', self.epoch_num, self.frame)
             self.algo_observer.after_print_stats(self.frame, self.epoch_num, total_time)
@@ -775,7 +948,7 @@ class MTFastTD3Agent(FastTD3Agent):
         obs_shape = torch_ext.shape_whc_to_cwh(self.obs_shape)
 
         self.all_task_indices : torch.Tensor = self.vec_env.env.extras["task_indices"]
-        ordered_task_names : list[str] = self.vec_env.env.extras["ordered_task_names"]
+        self.ordered_task_names : list[str] = self.vec_env.env.extras["ordered_task_names"]
 
         self.task_embedding_dim = torch.unique(self.all_task_indices).shape[0]
         
@@ -817,6 +990,12 @@ class MTFastTD3Agent(FastTD3Agent):
         self.replay_buffer = ReplayBuffer(self.replay_buffer_size, obs_dim, action_dim, self.device)
 
         self.algo_observer.before_init(base_name, self.config, self.experiment_name)
+
+        wandb.init(
+            project="IsaacGym",
+            name=config['name'] + datetime.now().strftime("_%d-%H-%M-%S"),
+            save_code=True
+        )
     
     def preproc_obs(self, obs):
         if isinstance(obs, dict):

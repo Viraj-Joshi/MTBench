@@ -63,7 +63,7 @@ class MTA2CAgent(A2CAgent):
         self.shuffle_data = self.config.get('shuffle_data', False)
 
         self.all_task_indices : torch.Tensor = self.vec_env.env.extras["task_indices"]
-        ordered_task_names : list[str] = self.vec_env.env.extras["ordered_task_names"]
+        self.ordered_task_names : list[str] = self.vec_env.env.extras["ordered_task_names"]
         
         # this is the arguments for building the network
         build_config = {
@@ -75,7 +75,7 @@ class MTA2CAgent(A2CAgent):
             'normalize_input': self.normalize_input,
             'task_indices': self.all_task_indices,
             'task_embedding_dim': torch.unique(self.all_task_indices).shape[0],
-            'ordered_task_names': ordered_task_names,
+            'ordered_task_names': self.ordered_task_names,
             'device': self._device
         }
         
@@ -464,6 +464,74 @@ class MTA2CAgent(A2CAgent):
         self.train_result = (a_loss, c_loss, entropy, \
             kl_dist, self.last_lr, lr_mul, \
             mu.detach(), sigma.detach(), b_loss)
+        
+    def evaluate(self):
+        """
+        Evaluates the given policy on a separate, deterministic evaluation environment.
+        A single rollout is performed, and each parallel environment is treated as one trial.
+
+        Returns:
+            A dictionary containing aggregated evaluation metrics.
+        """
+        print("\n--- Starting Evaluation ---")
+
+        # Reset all parallel environments in the evaluation VecTask
+        eval_env = self.vec_env.env
+        eval_env.reset_idx(torch.arange(self.num_actors, device=self.device))
+        obs = self.env_reset()
+
+        # Buffers to store the total reward and final success state for each parallel env
+        episode_rewards = torch.zeros(self.num_actors, device=self.device)
+        # Success is counted if it happens at any point in the episode
+        episode_successes = torch.zeros(self.num_actors, device=self.device, dtype=torch.bool)
+
+        # --- Run one full rollout for all parallel environments ---
+        for _ in range(eval_env.max_episode_length):
+            # Get actions from the policy
+            with torch.no_grad():
+                res_dict = self.get_action_values(obs)
+                actions = res_dict['actions']
+
+            # Step the evaluation environment
+            obs, rewards, self.dones, infos = self.env_step(actions)
+            if 'episode' in infos:
+                success = infos['episode']['success']
+            else:
+                success = torch.zeros_like(episode_successes)
+
+            episode_rewards += rewards.squeeze(-1)
+            episode_successes = torch.logical_or(episode_successes, success)
+
+        # --- Aggregate and Report Final Metrics ---
+        eval_metrics = {}
+        print("--- Evaluation Summary ---")
+        
+        # Iterate through each task
+        for task_idx in torch.unique(self.all_task_indices):
+            task_name = self.ordered_task_names[task_idx.item()]
+            
+            # Find all parallel environments that correspond to this task
+            task_env_indices = (self.all_task_indices == task_idx).nonzero(as_tuple=False).squeeze(-1)
+
+            if task_env_indices.numel() > 0:
+                # Calculate the mean success and reward for this task's trials
+                task_success_rate = episode_successes[task_env_indices].float().mean().item()
+                task_avg_reward = episode_rewards[task_env_indices].mean().item()
+                
+                # Store metrics for logging (e.g., with TensorBoard)
+                eval_metrics[f'eval/{task_name}/success_rate'] = task_success_rate
+                eval_metrics[f'eval/{task_name}/avg_reward'] = task_avg_reward
+                
+                print(f"  Task: {task_name:<25} | Avg Success Rate: {task_success_rate:.4f} | Avg Reward: {task_avg_reward:.4f}")
+
+        # Calculate overall average success rate across all tasks and trials
+        overall_avg_success = episode_successes.float().mean().item()
+        eval_metrics['eval/overall_success_rate'] = overall_avg_success
+        print(f"\nOverall Average Success Rate: {overall_avg_success:.4f}\n")
+
+        print("\n--- Evaluation Complete ---\n")
+
+        return eval_metrics
 
     def train_epoch(self):
         # even though it is PPO like
@@ -535,6 +603,24 @@ class MTA2CAgent(A2CAgent):
         play_time = play_time_end - play_time_start
         update_time = update_time_end - update_time_start
         total_time = update_time_end - play_time_start
+
+        if self.vec_env.env.isSeperateEvaluation and self.epoch_num % self.vec_env.env.evalInterval == 0: 
+            self.evaluate()
+            # hacky way to reset the environment after evaluation
+            self.vec_env.env.reset_idx(torch.arange(self.num_actors, device=self.device))
+            self.obs = self.env_reset()  # Reset the environment after evaluation
+
+             # randomize progress_buf again
+            total_count = 0
+            for tid, env_count in zip(self.vec_env.env.task_idx, self.vec_env.env.task_env_count):
+                self.vec_env.env.env_id_to_task_id[total_count:total_count+env_count] = [tid for _ in range(env_count)]
+                # exempted_init_at_random_progress_tasks is a list of task ids that should not be initialized at random progress
+                if not self.vec_env.env.init_at_random_progress or tid in self.vec_env.env.exempted_init_at_random_progress_tasks:
+                    self.vec_env.env.progress_buf[total_count:total_count+env_count] = 0
+                else:
+                    self.vec_env.env.progress_buf[total_count:total_count+env_count] = torch.randint_like(self.vec_env.env.progress_buf[total_count:total_count+env_count], high=int(self.vec_env.env.max_episode_length))
+                    
+                total_count += env_count
 
         return batch_dict['step_time'], play_time, update_time, total_time, a_losses, c_losses, b_losses, entropies, kls, last_lr, lr_mul
 

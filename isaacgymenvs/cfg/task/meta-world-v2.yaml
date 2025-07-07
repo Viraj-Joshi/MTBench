@@ -21,11 +21,13 @@ env:
   tasks: ${...task_id}
   taskEnvCount: ${...task_counts}
   init_at_random_progress: ${...init_at_random_progress}
-  exemptedInitAtRandomProgressTasks: ${...exempted_tasks} # # [1,2,30,31,32,37,38,39,42]
+  exemptedInitAtRandomProgressTasks: ${...exempted_tasks} # [1,2,30,31,32,37,38,39,42]
   taskEmbedding: True
   taskEmbeddingType: "one_hot"
   seed: ${...seed}
   cameraRenderingInterval: 5000
+  isSeperateEvaluation: False
+  evalInterval: 5000
   cameraWidth: 1024
   cameraHeight: 1024
   sparse_reward: ${...sparse_reward}

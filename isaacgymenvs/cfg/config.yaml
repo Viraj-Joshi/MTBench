@@ -95,3 +95,5 @@ nstep: 1
 gradient_steps_per_itr: 1
 batch_size: 256
 minibatch_size: 32678
+
+units: [256, 128, 64] # units in the actor critic network

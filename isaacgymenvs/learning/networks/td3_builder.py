@@ -39,6 +39,8 @@ class FastTD3Builder(network_builder.NetworkBuilder):
                 'n_act' : action_shape[0],
                 'num_envs' : num_envs,
                 'init_scale' : self.init_scale,
+                'std_min' : self.std_min,
+                'std_max' : self.std_max,
                 'hidden_dim' : self.actor_hidden_dim,
                 'device' : device,
             }
@@ -86,6 +88,8 @@ class FastTD3Builder(network_builder.NetworkBuilder):
             n_act = actor_args['n_act']
             num_envs = actor_args['num_envs']
             init_scale = actor_args['init_scale']
+            std_min = actor_args['std_min'] 
+            std_max = actor_args['std_max']
             actor_hidden_dim = actor_args['hidden_dim']
             device = actor_args['device']
 
@@ -95,6 +99,8 @@ class FastTD3Builder(network_builder.NetworkBuilder):
                 num_envs=num_envs,
                 init_scale=init_scale,
                 hidden_dim=actor_hidden_dim,
+                std_min=std_min,
+                std_max=std_max,
                 device=device,
             )
         def forward(self, obs_dict):
@@ -111,6 +117,8 @@ class FastTD3Builder(network_builder.NetworkBuilder):
         def load(self, params):
             self.actor_hidden_dim = params['actor']['hidden_feature']
             self.init_scale = params['actor']['init_scale']
+            self.std_min = params['actor']['std_min']
+            self.std_max = params['actor']['std_max']
 
             self.critic_hidden_dim = params['critic']['hidden_feature']
             self.v_min = params['critic']['v_min']

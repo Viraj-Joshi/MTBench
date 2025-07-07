@@ -110,6 +110,7 @@ class MTModelA2CContinuousLogStd(ModelA2CContinuousLogStd):
             input_dict['obs'] = self.norm_obs(input_dict['obs'], task_indices)
             # ---------------------
             mu, logstd, value, states = self.a2c_network(input_dict)
+            import ipdb; ipdb.set_trace()
             sigma = torch.exp(logstd)
             distr = torch.distributions.Normal(mu, sigma, validate_args=False)
 

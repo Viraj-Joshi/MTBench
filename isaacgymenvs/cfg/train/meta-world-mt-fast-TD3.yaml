@@ -13,6 +13,8 @@ params:
     actor:
       hidden_feature: 512
       init_scale: .5
+      std_min: .001
+      std_max: .4
     critic:
       hidden_feature: 1024
       v_min: 0

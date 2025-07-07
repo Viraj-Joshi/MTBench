@@ -13,13 +13,13 @@ do
 			fixed=False \
 			reward_scale=100 \
 			termination_on_success=False \
-			experiment=05_28_ppo_vanilla_mt10_rand_envs_${e}_seed_${i} \
+			experiment=06_20_ppo_vanilla_mt10_rand_envs_${e}_seed_${i} \
 			train=meta-world-mt10-vanilla-PPO\
 			seed=$i \
 			wandb_activate=True \
 			wandb_project=IsaacGym \
-			sim_device=cuda:0 \
-			rl_device=cuda:0 \
+			sim_device=cuda:1 \
+			rl_device=cuda:1 \
 			record_videos=False \
 			max_iterations=$t"
 		echo $cmd
