@@ -1,9 +1,22 @@
 #!/bin/bash
 
+e=24576
+# task_counts=[2458,2458,2458,2458,2458,2458,2457,2457,2457,2457]
 task_counts=[492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491]
-for e in 24576
+t=$((1000000000 / (e * 32)+1))
+for width in 1 2 3 4 5
 do
-	t=$((1000000000 / (e * 32)+1))
+	if [ $width -eq 1 ]; then
+		units=[256,256,256] # ~400k params
+	elif [ $width -eq 2 ]; then
+		units=[768,768,768] # ~1M params
+	elif [ $width -eq 3 ]; then
+		units=[1024,1024,1024] # ~4M params
+	elif [ $width -eq 4 ]; then
+		units=[2048,2048,2048]
+	elif [ $width -eq 5 ]; then
+		units=[4096,4096,4096]
+	fi
 	for i in 42 43 44
 	do
 		cmd="python isaacgymenvs/train.py \
@@ -14,8 +27,8 @@ do
 			fixed=False \
 			reward_scale=100 \
 			termination_on_success=False \
-			experiment=mhppo_mt50_rand_envs_${e}_seed_${i} \
-			train=meta-world-mt50-vanilla-MHPPO \
+			experiment=07_08_ppo_vanilla_mt50_rand_scaling_width_${width}_seed_${i} \
+			train=meta-world-mt50-vanilla-asymmetric-PPO \
 			seed=$i \
 			wandb_activate=True \
 			wandb_project=IsaacGym \
@@ -23,7 +36,10 @@ do
 			rl_device=cuda:0 \
 			headless=True \
 			record_videos=False \
-			max_iterations=$t"
+			reward_scale=100 \
+			termination_on_success=False \
+			max_iterations=$t \
+			units=$units"
 		echo $cmd
 		$cmd
 	done

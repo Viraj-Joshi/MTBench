@@ -27,8 +27,8 @@ do
 			fixed=False \
 			reward_scale=100 \
 			termination_on_success=False \
-			experiment=07_06_ppo_vanilla_mt10_rand_scaling_width_${width}_seed_${i} \
-			train=meta-world-mt10-vanilla-asymmetric-PPO \
+			experiment=ppo_simbav2_mt10_rand_scaling_width_${width}_seed_${i} \
+			train=meta-world-mt10-simba-v2-PPO \
 			seed=$i \
 			wandb_activate=True \
 			wandb_project=IsaacGym \
