@@ -7,7 +7,7 @@ params:
     name: mt_continuous_a2c_logstd
 
   network:
-    name: simba_v2_a2c
+    name: bro_a2c
     separate: True
 
     space:

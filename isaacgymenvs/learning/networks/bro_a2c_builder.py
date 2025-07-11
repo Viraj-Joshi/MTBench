@@ -5,17 +5,11 @@ import torch.nn.functional as F
 from copy import deepcopy
 
 from rl_games.algos_torch import network_builder
-from isaacgymenvs.learning.networks.simba_v2 import (
-    HyperEmbedder,
-    HyperLERPBlock,
-    HyperPolicy,
-    HyperCategoricalValue
-)
 
 from typing import List, Tuple
 import math
 
-class SimbaV2A2CBuilder(network_builder.NetworkBuilder):
+class BROA2CBuilder(network_builder.NetworkBuilder):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         return
@@ -24,7 +18,7 @@ class SimbaV2A2CBuilder(network_builder.NetworkBuilder):
         self.params = params
 
     def build(self, name, **kwargs):
-        net = SimbaV2A2CBuilder.Network(self.params, **kwargs)
+        net = BROA2CBuilder.Network(self.params, **kwargs)
         return net
 
     class Network(network_builder.NetworkBuilder.BaseNetwork):
@@ -45,7 +39,7 @@ class SimbaV2A2CBuilder(network_builder.NetworkBuilder):
             self.separate = params.get('separate', False)
             
             if not self.separate:
-                raise NotImplementedError("SimbaV2 + PPO only supports separate actor and critic networks for now.")
+                raise NotImplementedError("BRO + PPO only supports separate actor and critic networks for now.")
 
             # obs dim changes to real_obs_dim + task_embedding_dim if we are using learnable task embeddings
             obs_dim = real_obs_dim + task_embedding_dim if learn_task_embedding else obs_shape[0]
@@ -54,12 +48,6 @@ class SimbaV2A2CBuilder(network_builder.NetworkBuilder):
                 'n_act' : action_dim,
                 'num_envs' : num_envs,
                 'hidden_dim' : self.actor_hidden_dim,
-                'scaler_init' : self.actor_scaler_init,
-                'scaler_scale' : self.actor_scaler_scale,
-                'alpha_init' : self.actor_alpha_init,
-                'alpha_scale' : self.actor_alpha_scale,
-                'expansion' : self.actor_expansion,
-                'c_shift' : self.actor_c_shift,
                 'num_blocks' : self.actor_num_blocks,
                 'learn_task_embedding' : learn_task_embedding,
                 'num_tasks': num_tasks,
@@ -72,12 +60,6 @@ class SimbaV2A2CBuilder(network_builder.NetworkBuilder):
                 'n_act' : action_dim,
                 'dv': self.dv,
                 'hidden_dim' : self.critic_hidden_dim,
-                'scaler_init' : self.critic_scaler_init,
-                'scaler_scale' : self.critic_scaler_scale,
-                'alpha_init' : self.critic_alpha_init,
-                'alpha_scale' : self.critic_alpha_scale,
-                'expansion' : self.critic_expansion,
-                'c_shift' : self.critic_c_shift,
                 'num_blocks' : self.critic_num_blocks,
                 'learn_task_embedding' : learn_task_embedding,
                 'num_tasks': num_tasks,
@@ -252,130 +234,17 @@ class SimbaV2A2CBuilder(network_builder.NetworkBuilder):
                 self.is_continuous = False
                 self.is_multi_discrete = False
 
-class DistributionalVNetwork(nn.Module):
-    def __init__(
-        self,
-        n_obs: int,
-        num_atoms: int,
-        v_min: float,
-        v_max: float,
-        hidden_dim: int,
-        scaler_init: float,
-        scaler_scale: float,
-        alpha_init: float,
-        alpha_scale: float,
-        num_blocks: int,
-        c_shift: float,
-        expansion: int,
-        device: torch.device = None,
-    ):
-        super().__init__()
-
-        self.embedder = HyperEmbedder(
-            in_dim=n_obs,
-            hidden_dim=hidden_dim,
-            scaler_init=scaler_init,
-            scaler_scale=scaler_scale,
-            c_shift=c_shift,
-            device=device,
-        )
-
-        self.encoder = nn.Sequential(
-            *[
-                HyperLERPBlock(
-                    hidden_dim=hidden_dim,
-                    scaler_init=scaler_init,
-                    scaler_scale=scaler_scale,
-                    alpha_init=alpha_init,
-                    alpha_scale=alpha_scale,
-                    expansion=expansion,
-                    device=device,
-                )
-                for _ in range(num_blocks)
-            ]
-        )
-
-        self.predictor = HyperCategoricalValue(
-            hidden_dim=hidden_dim,
-            num_bins=num_atoms,
-            scaler_init=1.0,
-            scaler_scale=1.0,
-            device=device,
-        )
-        self.v_min = v_min
-        self.v_max = v_max
-        self.num_atoms = num_atoms
-
-    def forward(self, obs: torch.Tensor) -> torch.Tensor:
-        x = obs
-        x = self.embedder(x)
-        x = self.encoder(x)
-        x = self.predictor(x)
-        return x
-
-    def projection(
-        self,
-        obs: torch.Tensor,
-        actions: torch.Tensor,
-        rewards: torch.Tensor,
-        bootstrap: torch.Tensor,
-        discount: float,
-        q_support: torch.Tensor,
-        device: torch.device,
-    ) -> torch.Tensor:
-        delta_z = (self.v_max - self.v_min) / (self.num_atoms - 1)
-        batch_size = rewards.shape[0]
-
-        target_z = (
-            rewards.unsqueeze(1)
-            + bootstrap.unsqueeze(1) * discount.unsqueeze(1) * q_support
-        )
-        target_z = target_z.clamp(self.v_min, self.v_max)
-        b = (target_z - self.v_min) / delta_z
-        l = torch.floor(b).long()
-        u = torch.ceil(b).long()
-
-        l_mask = torch.logical_and((u > 0), (l == u))
-        u_mask = torch.logical_and((l < (self.num_atoms - 1)), (l == u))
-
-        l = torch.where(l_mask, l - 1, l)
-        u = torch.where(u_mask, u + 1, u)
-
-        next_dist = F.softmax(self.forward(obs, actions), dim=1)
-        proj_dist = torch.zeros_like(next_dist)
-        offset = (
-            torch.linspace(
-                0, (batch_size - 1) * self.num_atoms, batch_size, device=device
-            )
-            .unsqueeze(1)
-            .expand(batch_size, self.num_atoms)
-            .long()
-        )
-        proj_dist.view(-1).index_add_(
-            0, (l + offset).view(-1), (next_dist * (u.float() - b)).view(-1)
-        )
-        proj_dist.view(-1).index_add_(
-            0, (u + offset).view(-1), (next_dist * (b - l.float())).view(-1)
-        )
-        return proj_dist
-
 class Critic(nn.Module):
     def __init__(
         self,
         n_obs: int,
         n_act: int,
-        dv: dict,
         hidden_dim: int,
-        scaler_init: float,
-        scaler_scale: float,
-        alpha_init: float,
-        alpha_scale: float,
         num_blocks: int,
-        c_shift: float,
-        expansion: int,
         learn_task_embedding: bool,
         num_tasks: int,
         task_embedding_dim: int,
+        dv: dict,
         device: torch.device = None,
     ):
         super().__init__()
@@ -385,55 +254,34 @@ class Critic(nn.Module):
             v_min = dv['v_min']
             v_max = dv['v_max']
             num_atoms = dv['num_atoms']
-            self.critic = DistributionalVNetwork(
-                n_obs=n_obs,
-                num_atoms=num_atoms,
-                v_min=v_min,
-                v_max=v_max,
-                hidden_dim=hidden_dim,
-                scaler_init=scaler_init,
-                scaler_scale=scaler_scale,
-                alpha_init=alpha_init,
-                alpha_scale=alpha_scale,
-                num_blocks=num_blocks,
-                c_shift=c_shift,
-                expansion=expansion,
-                device=device,
-            )
+            self.critic = None
 
             self.register_buffer(
             "q_support", torch.linspace(v_min, v_max, num_atoms, device=device)
             )
             self.device = device
         else:
-            self.critic = nn.Sequential(
-                HyperEmbedder(
-                    in_dim=n_obs,
-                    hidden_dim=hidden_dim,
-                    scaler_init=scaler_init,
-                    scaler_scale=scaler_scale,
-                    c_shift=c_shift,
-                    device=device,
-                ),
+            embedder = nn.Sequential(
+                layer_init(nn.Linear(n_obs, hidden_dim)),
+                nn.LayerNorm(hidden_dim),
+                nn.ReLU()
+            )
+
+            encoder = nn.Sequential(
                 *[
-                    HyperLERPBlock(
-                        hidden_dim=hidden_dim,
-                        scaler_init=scaler_init,
-                        scaler_scale=scaler_scale,
-                        alpha_init=alpha_init,
-                        alpha_scale=alpha_scale,
-                        expansion=expansion,
-                        device=device,
+                    BRONetBlock(
+                        in_dim=hidden_dim,
+                        hidden_dim=hidden_dim
                     )
                     for _ in range(num_blocks)
-                ],
-                HyperPolicy(
-                    hidden_dim=hidden_dim,
-                    action_dim=1,
-                    scaler_init=1.0,
-                    scaler_scale=1.0,
-                    device=device,
-                )
+                ]
+            )
+            predictor = layer_init(nn.Linear(hidden_dim, 1))
+
+            self.critic = nn.Sequential(
+                embedder,
+                encoder,
+                predictor,
             )
         
         self.task_embedding = torch.nn.Embedding(
@@ -488,12 +336,6 @@ class Actor(nn.Module):
         n_act: int,
         num_envs: int,
         hidden_dim: int,
-        scaler_init: float,
-        scaler_scale: float,
-        alpha_init: float,
-        alpha_scale: float,
-        expansion: int,
-        c_shift: float,
         num_blocks: int,
         learn_task_embedding: bool,
         num_tasks: int,
@@ -503,35 +345,22 @@ class Actor(nn.Module):
         super().__init__()
         self.n_act = n_act
 
-        self.embedder = HyperEmbedder(
-            in_dim=n_obs,
-            hidden_dim=hidden_dim,
-            scaler_init=scaler_init,
-            scaler_scale=scaler_scale,
-            c_shift=c_shift,
-            device=device,
+        self.embedder = nn.Sequential(
+            layer_init(nn.Linear(n_obs, hidden_dim)),
+            nn.LayerNorm(hidden_dim),
+            nn.ReLU()
         )
+
         self.encoder = nn.Sequential(
             *[
-                HyperLERPBlock(
-                    hidden_dim=hidden_dim,
-                    scaler_init=scaler_init,
-                    scaler_scale=scaler_scale,
-                    alpha_init=alpha_init,
-                    alpha_scale=alpha_scale,
-                    expansion=expansion,
-                    device=device,
+                BRONetBlock(
+                    in_dim=hidden_dim,
+                    hidden_dim=hidden_dim
                 )
                 for _ in range(num_blocks)
             ]
         )
-        self.predictor = HyperPolicy(
-            hidden_dim=hidden_dim,
-            action_dim=n_act,
-            scaler_init=1.0,
-            scaler_scale=1.0,
-            device=device,
-        )
+        self.predictor = layer_init(nn.Linear(hidden_dim, n_act))
 
         self.task_embedding = torch.nn.Embedding(
             num_embeddings=num_tasks,
@@ -553,4 +382,39 @@ class Actor(nn.Module):
         x = self.encoder(x)
         x = self.predictor(x)
         return x
+    
+def layer_init(layer, std=None, bias_const=0.0):
+    if std is None:
+        torch.nn.init.orthogonal_(layer.weight)
+    else:
+        torch.nn.init.orthogonal_(layer.weight, std)
+    torch.nn.init.constant_(layer.bias, bias_const)
+    return layer
+
+class BRONetBlock(nn.Module):
+    """
+    A residual block following BRO.
+    """
+
+    def __init__(
+        self,
+        in_dim: int,
+        hidden_dim: int,
+    ):
+        super().__init__()
+        self.block = nn.Sequential(
+            layer_init(nn.Linear(in_dim, hidden_dim)),
+            nn.LayerNorm(hidden_dim),
+            nn.ReLU(),
+            layer_init(nn.Linear(hidden_dim, in_dim)),
+            nn.LayerNorm(hidden_dim),
+        )
+        
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass through the block.
+        """
+        out = self.block(x)
+        return x + out
 

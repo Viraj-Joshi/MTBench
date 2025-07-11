@@ -3,21 +3,22 @@
 e=24576
 task_counts=[2458,2458,2458,2458,2458,2458,2457,2457,2457,2457]
 # task_counts=[492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491]
-t=$((1000000000 / (e * 32)+1))
-for width in 1 2 3 4 5
+t=$((500000000 / (e * 32)+1))
+for width in 1
 do
+	critic_blocks=2
 	if [ $width -eq 1 ]; then
-		units=[256,256,256] # ~400k params
+		critic_hidden_dim=256
 	elif [ $width -eq 2 ]; then
-		units=[768,768,768] # ~1M params
+		critic_hidden_dim=512
 	elif [ $width -eq 3 ]; then
-		units=[1024,1024,1024] # ~4M params
+		critic_hidden_dim=1024
 	elif [ $width -eq 4 ]; then
-		units=[2048,2048,2048]
+		critic_hidden_dim=2048
 	elif [ $width -eq 5 ]; then
-		units=[4096,4096,4096]
+		critic_hidden_dim=4096
 	fi
-	for i in 42 43 44
+	for i in 42 43
 	do
 		cmd="python isaacgymenvs/train.py \
 			task_id=[4,16,17,18,28,31,38,40,48,49] \
@@ -27,7 +28,7 @@ do
 			fixed=False \
 			reward_scale=100 \
 			termination_on_success=False \
-			experiment=ppo_simbav2_mt10_rand_scaling_width_${width}_seed_${i} \
+			experiment=ppo_simbav2_TE_mt10_rand_scaling_width_${width}_seed_${i} \
 			train=meta-world-mt10-simba-v2-PPO \
 			seed=$i \
 			wandb_activate=True \
@@ -38,8 +39,7 @@ do
 			record_videos=False \
 			reward_scale=100 \
 			termination_on_success=False \
-			max_iterations=$t \
-			units=$units"
+			max_iterations=$t"
 		echo $cmd
 		$cmd
 	done

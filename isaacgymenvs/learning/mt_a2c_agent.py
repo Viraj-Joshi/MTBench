@@ -1,13 +1,10 @@
 from typing import List, Tuple
 
-import random
-import copy
 from datetime import datetime
 from gym import spaces
 import numpy as np
 import os
 import time
-import yaml
 
 import torch 
 from torch import nn
@@ -25,7 +22,6 @@ from rl_games.algos_torch.a2c_continuous import A2CAgent
 from rl_games.common import datasets
 
 from .grad_mani import pcgrad_backward, cagrad_backward
-from .utils import filter_leader, print_statistics
 
 def swap_and_flatten01(arr):
     """
@@ -38,7 +34,6 @@ def swap_and_flatten01(arr):
 
 
 def actor_loss_mt(old_action_neglog_probs_batch, action_neglog_probs, advantage, is_ppo, curr_e_clip, task_indices):
-    # not sure if this advantage is normalized or not, but we can normlaize it again by tasks
     # normalize advantage by tasks
     for task_id in torch.unique(task_indices):
         mask = task_indices == task_id
@@ -64,6 +59,16 @@ class MTA2CAgent(A2CAgent):
 
         self.all_task_indices : torch.Tensor = self.vec_env.env.extras["task_indices"]
         self.ordered_task_names : list[str] = self.vec_env.env.extras["ordered_task_names"]
+
+        learn_task_embedding = self.config.get('learn_task_embedding', False)
+        '''
+        if learn_task_embedding is True, we will use the task embedding dim in the config
+        otherwise the task_embedding_dim is the dim from the one hot encoding of the task indices
+        '''
+        if learn_task_embedding:
+            task_embedding_dim = self.config['task_embedding_dim']
+        else: 
+            task_embedding_dim = torch.unique(self.all_task_indices).shape[0]
         
         # this is the arguments for building the network
         build_config = {
@@ -73,8 +78,9 @@ class MTA2CAgent(A2CAgent):
             'value_size': self.env_info.get('value_size',1),
             'normalize_value' : self.normalize_value,
             'normalize_input': self.normalize_input,
+            'learn_task_embedding': learn_task_embedding,
             'task_indices': self.all_task_indices,
-            'task_embedding_dim': torch.unique(self.all_task_indices).shape[0],
+            'task_embedding_dim': task_embedding_dim,
             'ordered_task_names': self.ordered_task_names,
             'device': self._device
         }
@@ -836,209 +842,3 @@ class FAMOA2CAgent(MTA2CAgent):
         #         c_losses.append(c_loss[mask].mean())
 
         self.update()  # torch.stack(c_losses))
-
-# class PCGradA2CAgent(MTA2CAgent):
-#     def __init__(self, base_name, params):
-#         self.project_actor_gradient = params["config"]["pcgrad"].get("project_actor_gradient", False)
-#         super().__init__(base_name, params)
-
-#     def backward(self, a_loss, c_loss, entropy, b_loss, task_indices):
-#         # only manipulate critic loss
-#         critic_parameters = []
-#         other_parameters = []
-#         for n, p in self.model.named_parameters():
-#             if 'critic' in n or 'value' in n:
-#                 critic_parameters.append(p)
-#             else:
-#                 other_parameters.append(p)
-        
-
-#         if self.project_actor_gradient:
-#             loss = a_loss - entropy * self.entropy_coef + b_loss * self.bounds_loss_coef + c_loss * 0.5 * self.critic_coef
-#         else:
-#             loss = a_loss - entropy * self.entropy_coef + b_loss * self.bounds_loss_coef
-#             self.scaler.scale(loss.mean()).backward()
-#             loss = c_loss * 0.5 * self.critic_coef
-#         tids = torch.unique(task_indices)
-#         self.n_tasks = len(tids)
-#         losses = []
-#         for tid in tids:
-#             mask = task_indices == tid
-#             losses.append(self.scaler.scale(loss[mask].mean()))
-#         self._set_pc_grads(losses, critic_parameters)
-    
-#         self.scaler.scale(loss.mean()).backward()
-
-        
-
-#     def _set_pc_grads(self, losses, shared_parameters):
-#         # shared part
-#         shared_grads = []
-#         for l in losses:
-#             shared_grads.append(
-#                 torch.autograd.grad(l, shared_parameters, retain_graph=True)
-#             )
-
-#         non_conflict_shared_grads = self._project_conflicting(shared_grads)
-
-#         for p, g in zip(shared_parameters, non_conflict_shared_grads):
-#             p.grad = g
-        
-#     def _project_conflicting(self, grads: List[Tuple[torch.Tensor]]):
-#         pc_grad = copy.deepcopy(grads)
-#         for g_i in pc_grad:
-#             random.shuffle(grads)
-#             for g_j in grads:
-#                 g_i_g_j = sum(
-#                     [
-#                         torch.dot(torch.flatten(grad_i), torch.flatten(grad_j))
-#                         for grad_i, grad_j in zip(g_i, g_j)
-#                     ]
-#                 )
-#                 if g_i_g_j < 0:
-#                     g_j_norm_square = (
-#                         torch.norm(torch.cat([torch.flatten(g) for g in g_j])) ** 2
-#                     )
-#                     for grad_i, grad_j in zip(g_i, g_j):
-#                         grad_i -= g_i_g_j * grad_j / g_j_norm_square
-
-#         merged_grad = [sum(g) for g in zip(*pc_grad)]
-#         # by default use reduction mean
-#         merged_grad = [g / self.n_tasks for g in merged_grad]
-
-#         return merged_grad
-
-
-# class CAGradA2CAgent(MTA2CAgent):
-#     def __init__(self, base_name, params):
-#         self.cagrad_cfg = params["config"].get("cagrad", {})
-#         self.c = self.cagrad_cfg.get("c", 0.4)
-#         self.operate_actor_gradient = self.cagrad_cfg.get("operate_actor_gradient", False)
-#         super().__init__(base_name, params)
-
-#     def backward(self, a_loss, c_loss, entropy, b_loss, task_indices):
-#         # only manipulate critic loss
-#         critic_parameters = []
-#         other_parameters = []
-#         for n, p in self.model.named_parameters():
-#             if 'critic' in n or 'value' in n:
-#                 critic_parameters.append(p)
-#             else:
-#                 other_parameters.append(p)
-
-#         if self.operate_actor_gradient:
-#             loss = a_loss - entropy * self.entropy_coef + b_loss * self.bounds_loss_coef + c_loss * 0.5 * self.critic_coef
-#             shared_parameters = critic_parameters + other_parameters
-#         else:
-#             loss = a_loss - entropy * self.entropy_coef + b_loss * self.bounds_loss_coef
-#             self.scaler.scale(loss.mean()).backward()
-#             loss = c_loss * 0.5 * self.critic_coef
-#             shared_parameters = critic_parameters
-#         tids = torch.unique(task_indices)
-#         self.n_tasks = len(tids)
-#         losses = []
-#         for tid in tids:
-#             mask = task_indices == tid
-#             losses.append(self.scaler.scale(loss[mask].mean()))
-            
-#         self.get_weighted_loss(losses, shared_parameters)
-
-#     def get_weighted_loss(
-#         self,
-#         losses,
-#         shared_parameters,
-#         **kwargs,
-#     ):
-#         """
-#         Parameters
-#         ----------
-#         losses :
-#         shared_parameters : shared parameters
-#         kwargs :
-#         Returns
-#         -------
-#         """
-#         # NOTE: we allow only shared params for now. Need to see paper for other options.
-#         grad_dims = []
-#         for param in shared_parameters:
-#             grad_dims.append(param.data.numel())
-#         grads = torch.Tensor(sum(grad_dims), self.n_tasks).to(self.device)
-
-#         for i in range(self.n_tasks):
-#             if i < self.n_tasks:
-#                 self.scaler.scale(losses[i].mean()).backward(retain_graph=True)
-#             else:
-#                 self.scaler.scale(losses[i].mean()).backward()
-#             self.grad2vec(shared_parameters, grads, grad_dims, i)
-#             # multi_task_model.zero_grad_shared_modules()
-#             for p in shared_parameters:
-#                 p.grad = None
-
-#         g, GTG, w_cpu = self.cagrad(grads, alpha=self.c, rescale=1)
-#         self.overwrite_grad(shared_parameters, g, grad_dims)
-#         return GTG, w_cpu
-
-#     def cagrad(self, grads, alpha=0.5, rescale=1):
-#         GG = grads.t().mm(grads).cpu()  # [num_tasks, num_tasks]
-#         g0_norm = (GG.mean() + 1e-8).sqrt()  # norm of the average gradient
-
-#         x_start = np.ones(self.n_tasks) / self.n_tasks
-#         bnds = tuple((0, 1) for x in x_start)
-#         cons = {"type": "eq", "fun": lambda x: 1 - sum(x)}
-#         A = GG.numpy()
-#         b = x_start.copy()
-#         c = (alpha * g0_norm + 1e-8).item()
-
-#         def objfn(x):
-#             return (
-#                 x.reshape(1, self.n_tasks).dot(A).dot(b.reshape(self.n_tasks, 1))
-#                 + c
-#                 * np.sqrt(
-#                     x.reshape(1, self.n_tasks).dot(A).dot(x.reshape(self.n_tasks, 1))
-#                     + 1e-8
-#                 )
-#             ).sum()
-
-#         res = minimize(objfn, x_start, bounds=bnds, constraints=cons)
-#         w_cpu = res.x
-#         ww = torch.Tensor(w_cpu).to(grads.device)
-#         gw = (grads * ww.view(1, -1)).sum(1)
-#         gw_norm = gw.norm()
-#         lmbda = c / (gw_norm + 1e-8)
-#         g = grads.mean(1) + lmbda * gw
-#         if rescale == 0:
-#             return g, GG.numpy(), w_cpu
-#         elif rescale == 1:
-#             return g / (1 + alpha ** 2), GG.numpy(), w_cpu
-#         else:
-#             return g / (1 + alpha), GG.numpy(), w_cpu
-
-#     @staticmethod
-#     def grad2vec(shared_params, grads, grad_dims, task):
-#         # store the gradients
-#         grads[:, task].fill_(0.0)
-#         cnt = 0
-#         # for mm in m.shared_modules():
-#         #     for p in mm.parameters():
-
-#         for param in shared_params:
-#             grad = param.grad
-#             if grad is not None:
-#                 grad_cur = grad.data.detach().clone()
-#                 beg = 0 if cnt == 0 else sum(grad_dims[:cnt])
-#                 en = sum(grad_dims[: cnt + 1])
-#                 grads[beg:en, task].copy_(grad_cur.data.view(-1))
-#             cnt += 1
-
-#     def overwrite_grad(self, shared_parameters, newgrad, grad_dims):
-#         newgrad = newgrad * self.n_tasks  # to match the sum loss
-#         cnt = 0
-
-#         # for mm in m.shared_modules():
-#         #     for param in mm.parameters():
-#         for param in shared_parameters:
-#             beg = 0 if cnt == 0 else sum(grad_dims[:cnt])
-#             en = sum(grad_dims[: cnt + 1])
-#             this_grad = newgrad[beg:en].contiguous().view(param.data.size())
-#             param.grad = this_grad.data.clone()
-#             cnt += 1
