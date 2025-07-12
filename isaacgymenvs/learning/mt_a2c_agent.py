@@ -20,6 +20,7 @@ from rl_games.common import a2c_common
 from rl_games.common import common_losses
 from rl_games.algos_torch.a2c_continuous import A2CAgent
 from rl_games.common import datasets
+from isaacgymenvs.learning.mt_models import PerTaskRewardNormalizer
 
 from .grad_mani import pcgrad_backward, cagrad_backward
 
@@ -54,8 +55,8 @@ class MTA2CAgent(A2CAgent):
     def __init__(self, base_name, params):
         a2c_common.ContinuousA2CBase.__init__(self, base_name, params)
         obs_shape = self.obs_shape
-        self._device = self.config.get('device', 'cuda:0')
         self.shuffle_data = self.config.get('shuffle_data', False)
+        self.normalize_reward = self.config.get('normalize_reward', False)
 
         self.all_task_indices : torch.Tensor = self.vec_env.env.extras["task_indices"]
         self.ordered_task_names : list[str] = self.vec_env.env.extras["ordered_task_names"]
@@ -82,7 +83,7 @@ class MTA2CAgent(A2CAgent):
             'task_indices': self.all_task_indices,
             'task_embedding_dim': task_embedding_dim,
             'ordered_task_names': self.ordered_task_names,
-            'device': self._device
+            'device': self.ppo_device
         }
         
         self.model = self.network.build(build_config)
@@ -118,6 +119,9 @@ class MTA2CAgent(A2CAgent):
         # change it to list of mean_std models
         if self.normalize_value:
             self.value_mean_stds = self.central_value_net.model.value_mean_stds if self.has_central_value else self.model.value_mean_stds
+
+        if self.normalize_reward:
+            self.reward_normalizer = PerTaskRewardNormalizer(torch.unique(self.all_task_indices).shape[0], self.gamma, device=self.ppo_device).to(self.ppo_device)
 
         self.has_value_loss = self.use_experimental_cv or not self.has_central_value
         self.algo_observer.after_init(self)
@@ -169,6 +173,12 @@ class MTA2CAgent(A2CAgent):
             if self.value_bootstrap and 'time_outs' in infos:
                 shaped_rewards += self.gamma * res_dict['values'] * self.cast_obs(infos['time_outs']).unsqueeze(1).float()
 
+            if self.normalize_reward:
+                self.reward_normalizer.update_stats(
+                    shaped_rewards.squeeze(-1),
+                    self.dones,
+                    self.all_task_indices
+                )
             self.experience_buffer.update_data('rewards', n, shaped_rewards)
 
             self.current_rewards += rewards
@@ -195,6 +205,14 @@ class MTA2CAgent(A2CAgent):
 
         last_values = self.get_values(self.obs)
 
+        if self.normalize_reward:
+            mb_rewards = self.experience_buffer.tensor_dict['rewards']
+            for n in range(self.horizon_length):
+                # Apply the normalization
+                mb_rewards[n] = self.reward_normalizer(
+                    mb_rewards[n].squeeze(-1),
+                    self.all_task_indices
+                ).unsqueeze(-1)
 
         fdones = self.dones.float()
         mb_fdones = self.experience_buffer.tensor_dict['dones'].float()

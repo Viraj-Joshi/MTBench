@@ -25,7 +25,7 @@ params:
       num_blocks: 1
     critic:
       hidden_dim: 256
-      num_blocks: 1
+      num_blocks: 2
       # dv: # optional 
       #   v_min: 0
       #   v_max: 1200.0
@@ -45,8 +45,9 @@ params:
     normalize_value: True
     value_bootstrap: True
 
-    learn_task_embedding: True
-    task_embedding_dim: 10
+    learn_task_embedding: False
+    task_embedding_dim: 32
+    normalize_reward: True
     
     num_actors: ${....task.env.numEnvs}
     reward_shaper:

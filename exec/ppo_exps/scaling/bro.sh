@@ -27,13 +27,13 @@ do
 			fixed=False \
 			reward_scale=100 \
 			termination_on_success=False \
-			experiment=ppo_simbav2_mt10_rand_scaling_width_${width}_seed_${i} \
-			train=meta-world-mt10-simba-v2-PPO \
+			experiment=ppo_bro_TE_mt10_rand_scaling_width_${width}_seed_${i} \
+			train=meta-world-mt10-bro-PPO \
 			seed=$i \
 			wandb_activate=True \
 			wandb_project=IsaacGym \
-			sim_device=cuda:0 \
-			rl_device=cuda:0 \
+			sim_device=cuda:1 \
+			rl_device=cuda:1 \
 			headless=True \
 			record_videos=False \
 			reward_scale=100 \

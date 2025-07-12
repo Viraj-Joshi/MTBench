@@ -47,7 +47,6 @@ params:
 
     learn_task_embedding: False
     task_embedding_dim: 32
-    normalize_reward: True
     
     num_actors: ${....task.env.numEnvs}
     reward_shaper:

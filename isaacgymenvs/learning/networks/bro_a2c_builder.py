@@ -100,13 +100,6 @@ class BROA2CBuilder(network_builder.NetworkBuilder):
             learn_task_embedding = critic_args['learn_task_embedding']
             num_tasks = critic_args['num_tasks']
             task_embedding_dim = critic_args['task_embedding_dim']
-            # Simba Specific parameters
-            critic_scaler_init = critic_args['scaler_init']
-            critic_scaler_scale = critic_args['scaler_scale']
-            critic_alpha_init = critic_args['alpha_init']
-            critic_alpha_scale = critic_args['alpha_scale']
-            critic_expansion = critic_args['expansion']
-            critic_c_shift = critic_args['c_shift']
             # optional distributional value function 
             dv = critic_args['dv'] 
 
@@ -115,12 +108,6 @@ class BROA2CBuilder(network_builder.NetworkBuilder):
                 n_act=n_act,
                 dv=dv,
                 hidden_dim=critic_hidden_dim,
-                scaler_init=critic_scaler_init,
-                scaler_scale=critic_scaler_scale,
-                alpha_init=critic_alpha_init,
-                alpha_scale=critic_alpha_scale,
-                expansion=critic_expansion,
-                c_shift=critic_c_shift,
                 num_blocks=critic_num_blocks,
                 learn_task_embedding=learn_task_embedding,
                 num_tasks=num_tasks,
@@ -138,25 +125,12 @@ class BROA2CBuilder(network_builder.NetworkBuilder):
             learn_task_embedding = actor_args['learn_task_embedding']
             num_tasks = actor_args['num_tasks']
             task_embedding_dim = actor_args['task_embedding_dim']
-            # Simba Specific parameters
-            scaler_init = actor_args['scaler_init']
-            scaler_scale = actor_args['scaler_scale']
-            alpha_init = actor_args['alpha_init']
-            alpha_scale = actor_args['alpha_scale']
-            expansion = actor_args['expansion']
-            c_shift = actor_args['c_shift']
 
             return Actor(
                 n_obs=n_obs,
                 n_act=n_act,
                 num_envs=num_envs,
                 hidden_dim=actor_hidden_dim,
-                scaler_init=scaler_init,
-                scaler_scale=scaler_scale,
-                alpha_init=alpha_init,
-                alpha_scale=alpha_scale,
-                expansion=expansion,
-                c_shift=c_shift,
                 num_blocks=actor_num_blocks,
                 learn_task_embedding=learn_task_embedding,
                 num_tasks=num_tasks,
@@ -233,6 +207,10 @@ class BROA2CBuilder(network_builder.NetworkBuilder):
                 self.is_discrete = False
                 self.is_continuous = False
                 self.is_multi_discrete = False
+
+def layer_init(layer):
+    # torch.nn.init.orthogonal_(layer.weight, gain=math.sqrt(2.0))
+    return layer
 
 class Critic(nn.Module):
     def __init__(
@@ -382,14 +360,6 @@ class Actor(nn.Module):
         x = self.encoder(x)
         x = self.predictor(x)
         return x
-    
-def layer_init(layer, std=None, bias_const=0.0):
-    if std is None:
-        torch.nn.init.orthogonal_(layer.weight)
-    else:
-        torch.nn.init.orthogonal_(layer.weight, std)
-    torch.nn.init.constant_(layer.bias, bias_const)
-    return layer
 
 class BRONetBlock(nn.Module):
     """
