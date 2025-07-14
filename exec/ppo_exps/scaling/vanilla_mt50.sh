@@ -27,7 +27,7 @@ do
 			fixed=False \
 			reward_scale=100 \
 			termination_on_success=False \
-			experiment=07_08_ppo_vanilla_mt50_rand_scaling_width_${width}_seed_${i} \
+			experiment=07_13_ppo_vanilla_TE_mt50_rand_scaling_width_${width}_seed_${i} \
 			train=meta-world-mt50-vanilla-asymmetric-PPO \
 			seed=$i \
 			wandb_activate=True \
@@ -39,7 +39,8 @@ do
 			reward_scale=100 \
 			termination_on_success=False \
 			max_iterations=$t \
-			units=$units"
+			units=$units \
+			learn_task_embedding=True"
 		echo $cmd
 		$cmd
 	done

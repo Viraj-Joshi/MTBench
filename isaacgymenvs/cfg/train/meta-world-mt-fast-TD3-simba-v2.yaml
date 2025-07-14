@@ -7,16 +7,17 @@ params:
     name: mt_fast_td3
 
   network:
-    name: fast_td3_a2c
+    name: fast_td3_simbav2
     space:
       continuous:
     actor:
       hidden_feature: 512
-      init_scale: .5
+      num_blocks: 1
       std_min: .001
       std_max: .4
     critic:
       hidden_feature: 1024
+      num_blocks: 2
       v_min: -10.0
       v_max: 10.0
       num_atoms: 101

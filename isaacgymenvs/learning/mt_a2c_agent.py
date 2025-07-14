@@ -123,6 +123,8 @@ class MTA2CAgent(A2CAgent):
         if self.normalize_reward:
             self.reward_normalizer = PerTaskRewardNormalizer(torch.unique(self.all_task_indices).shape[0], self.gamma, device=self.ppo_device).to(self.ppo_device)
 
+        self.evaluation_interval = self.config.get("evaluation_interval", 1000)
+
         self.has_value_loss = self.use_experimental_cv or not self.has_central_value
         self.algo_observer.after_init(self)
         self.actor_loss_func = actor_loss_mt
@@ -628,23 +630,24 @@ class MTA2CAgent(A2CAgent):
         update_time = update_time_end - update_time_start
         total_time = update_time_end - play_time_start
 
-        if self.vec_env.env.isSeperateEvaluation and self.epoch_num % self.vec_env.env.evalInterval == 0: 
-            self.evaluate()
-            # hacky way to reset the environment after evaluation
-            self.vec_env.env.reset_idx(torch.arange(self.num_actors, device=self.device))
-            self.obs = self.env_reset()  # Reset the environment after evaluation
+        # if self.epoch_num %  self.evaluation_interval == 0: 
+        #     self.evaluate()
+        #     # hacky way to reset the environment after evaluation
+        #     self.vec_env.env.reset_idx(torch.arange(self.num_actors, device=self.device))
+        #     self.vec_env.env.compute_observations()
+        #     self.obs = self.env_reset()  # Reset the environment after evaluation
 
-             # randomize progress_buf again
-            total_count = 0
-            for tid, env_count in zip(self.vec_env.env.task_idx, self.vec_env.env.task_env_count):
-                self.vec_env.env.env_id_to_task_id[total_count:total_count+env_count] = [tid for _ in range(env_count)]
-                # exempted_init_at_random_progress_tasks is a list of task ids that should not be initialized at random progress
-                if not self.vec_env.env.init_at_random_progress or tid in self.vec_env.env.exempted_init_at_random_progress_tasks:
-                    self.vec_env.env.progress_buf[total_count:total_count+env_count] = 0
-                else:
-                    self.vec_env.env.progress_buf[total_count:total_count+env_count] = torch.randint_like(self.vec_env.env.progress_buf[total_count:total_count+env_count], high=int(self.vec_env.env.max_episode_length))
+        #      # randomize progress_buf again
+        #     total_count = 0
+        #     for tid, env_count in zip(self.vec_env.env.task_idx, self.vec_env.env.task_env_count):
+        #         self.vec_env.env.env_id_to_task_id[total_count:total_count+env_count] = [tid for _ in range(env_count)]
+        #         # exempted_init_at_random_progress_tasks is a list of task ids that should not be initialized at random progress
+        #         if not self.vec_env.env.init_at_random_progress or tid in self.vec_env.env.exempted_init_at_random_progress_tasks:
+        #             self.vec_env.env.progress_buf[total_count:total_count+env_count] = 0
+        #         else:
+        #             self.vec_env.env.progress_buf[total_count:total_count+env_count] = torch.randint_like(self.vec_env.env.progress_buf[total_count:total_count+env_count], high=int(self.vec_env.env.max_episode_length))
                     
-                total_count += env_count
+        #         total_count += env_count
 
         return batch_dict['step_time'], play_time, update_time, total_time, a_losses, c_losses, b_losses, entropies, kls, last_lr, lr_mul
 

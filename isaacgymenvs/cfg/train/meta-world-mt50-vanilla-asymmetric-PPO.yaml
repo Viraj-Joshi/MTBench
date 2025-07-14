@@ -52,6 +52,10 @@ params:
     normalize_input: True
     normalize_value: True
     value_bootstrap: True
+
+    learn_task_embedding: ${....learn_task_embedding} 
+    task_embedding_dim: 32
+
     num_actors: ${....task.env.numEnvs}
     reward_shaper:
       scale_value: 1.0

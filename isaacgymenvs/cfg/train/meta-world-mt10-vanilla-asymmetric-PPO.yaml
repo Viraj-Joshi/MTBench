@@ -49,13 +49,19 @@ params:
     multi_gpu: ${....multi_gpu}
     ppo: True
     mixed_precision: True
+    value_bootstrap: True
+
+    learn_task_embedding: ${....learn_task_embedding} 
+    task_embedding_dim: 32
+
     normalize_input: True
     normalize_value: True
-    value_bootstrap: True
+    normalize_reward: False
+    normalize_advantage: True
+
     num_actors: ${....task.env.numEnvs}
     reward_shaper:
       scale_value: 1.0
-    normalize_advantage: True
     gamma: 0.99
     tau: 0.95
     learning_rate: 5e-4

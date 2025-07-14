@@ -1,3 +1,15 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import math
+
+from isaacgymenvs.learning.networks.simba_v2 import (
+    HyperEmbedder,
+    HyperLERPBlock,
+    HyperCategoricalValue,
+    HyperTanhPolicy,
+)
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -6,9 +18,7 @@ from copy import deepcopy
 
 from rl_games.algos_torch import network_builder
 
-from typing import List, Tuple
-
-class FastTD3Builder(network_builder.NetworkBuilder):
+class FastTD3SimbaV2Builder(network_builder.NetworkBuilder):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         return
@@ -17,7 +27,7 @@ class FastTD3Builder(network_builder.NetworkBuilder):
         self.params = params
 
     def build(self, name, **kwargs):
-        net = FastTD3Builder.Network(self.params, **kwargs)
+        net = FastTD3SimbaV2Builder.Network(self.params, **kwargs)
         return net
 
     class Network(network_builder.NetworkBuilder.BaseNetwork):
@@ -40,10 +50,16 @@ class FastTD3Builder(network_builder.NetworkBuilder):
                 'n_obs' : obs_dim,
                 'n_act' : action_shape[0],
                 'num_envs' : num_envs,
-                'init_scale' : self.init_scale,
                 'std_min' : self.std_min,
                 'std_max' : self.std_max,
                 'hidden_dim' : self.actor_hidden_dim,
+                'scaler_init' : self.critic_scaler_init,
+                'scaler_scale' : self.critic_scaler_scale,
+                'alpha_init' : self.critic_alpha_init,
+                'alpha_scale' : self.critic_alpha_scale,
+                'expansion' : self.critic_expansion,
+                'c_shift' : self.critic_c_shift,
+                'num_blocks' : self.critic_num_blocks,
                 'learn_task_embedding' : learn_task_embedding,
                 'task_embedding_dim' : task_embedding_dim,
                 'num_tasks' : num_tasks,
@@ -57,6 +73,13 @@ class FastTD3Builder(network_builder.NetworkBuilder):
                 'v_min' : self.v_min,
                 'v_max' : self.v_max,
                 'hidden_dim' : self.critic_hidden_dim,
+                'scaler_init' : self.critic_scaler_init,
+                'scaler_scale' : self.critic_scaler_scale,
+                'alpha_init' : self.critic_alpha_init,
+                'alpha_scale' : self.critic_alpha_scale,
+                'expansion' : self.critic_expansion,
+                'c_shift' : self.critic_c_shift,
+                'num_blocks' : self.critic_num_blocks,
                 'learn_task_embedding' : learn_task_embedding,
                 'task_embedding_dim' : task_embedding_dim,
                 'num_tasks' : num_tasks,
@@ -79,10 +102,18 @@ class FastTD3Builder(network_builder.NetworkBuilder):
             v_min = critic_args['v_min']
             v_max = critic_args['v_max']
             critic_hidden_dim = critic_args['hidden_dim']
+            critic_num_blocks = critic_args['num_blocks']
             learn_task_embedding = critic_args['learn_task_embedding']
-            task_embedding_dim = critic_args['task_embedding_dim']
             num_tasks = critic_args['num_tasks']
+            task_embedding_dim = critic_args['task_embedding_dim']
             device = critic_args['device']
+            # Simba Specific parameters
+            critic_scaler_init = critic_args['scaler_init']
+            critic_scaler_scale = critic_args['scaler_scale']
+            critic_alpha_init = critic_args['alpha_init']
+            critic_alpha_scale = critic_args['alpha_scale']
+            critic_expansion = critic_args['expansion']
+            critic_c_shift = critic_args['c_shift']
 
             return Critic(
                 n_obs=n_obs,
@@ -91,6 +122,13 @@ class FastTD3Builder(network_builder.NetworkBuilder):
                 v_min=v_min,
                 v_max=v_max,
                 hidden_dim=critic_hidden_dim,
+                scaler_init=critic_scaler_init,
+                scaler_scale=critic_scaler_scale,
+                alpha_init=critic_alpha_init,
+                alpha_scale=critic_alpha_scale,
+                expansion=critic_expansion,
+                c_shift=critic_c_shift,
+                num_blocks=critic_num_blocks,
                 learn_task_embedding=learn_task_embedding,
                 task_embedding_dim=task_embedding_dim,
                 num_tasks=num_tasks,
@@ -101,21 +139,35 @@ class FastTD3Builder(network_builder.NetworkBuilder):
             n_obs = actor_args['n_obs']
             n_act = actor_args['n_act']
             num_envs = actor_args['num_envs']
-            init_scale = actor_args['init_scale']
             std_min = actor_args['std_min'] 
             std_max = actor_args['std_max']
             actor_hidden_dim = actor_args['hidden_dim']
+            actor_num_blocks = actor_args['num_blocks']
             learn_task_embedding = actor_args['learn_task_embedding']
             task_embedding_dim = actor_args['task_embedding_dim']
             num_tasks = actor_args['num_tasks']
             device = actor_args['device']
+            # Simba Specific parameters
+            scaler_init = actor_args['scaler_init']
+            scaler_scale = actor_args['scaler_scale']
+            alpha_init = actor_args['alpha_init']
+            alpha_scale = actor_args['alpha_scale']
+            expansion = actor_args['expansion']
+            c_shift = actor_args['c_shift']
+
 
             return Actor(
                 n_obs=n_obs,
                 n_act=n_act,
                 num_envs=num_envs,
-                init_scale=init_scale,
                 hidden_dim=actor_hidden_dim,
+                scaler_init=scaler_init,
+                scaler_scale=scaler_scale,
+                alpha_init=alpha_init,
+                alpha_scale=alpha_scale,
+                expansion=expansion,
+                c_shift=c_shift,
+                num_blocks=actor_num_blocks,
                 learn_task_embedding=learn_task_embedding,
                 task_embedding_dim=task_embedding_dim,
                 num_tasks=num_tasks,
@@ -132,14 +184,29 @@ class FastTD3Builder(network_builder.NetworkBuilder):
 
         def load(self, params):
             self.actor_hidden_dim = params['actor']['hidden_feature']
-            self.init_scale = params['actor']['init_scale']
+            self.actor_num_blocks = params['actor']['num_blocks']
             self.std_min = params['actor']['std_min']
             self.std_max = params['actor']['std_max']
 
+            self.actor_scaler_init = math.sqrt(2.0 / self.actor_hidden_dim)
+            self.actor_scaler_scale = math.sqrt(2.0 / self.actor_hidden_dim)
+            self.actor_alpha_init = 1.0 / (self.actor_num_blocks + 1)
+            self.actor_alpha_scale = 1.0 / math.sqrt(self.actor_hidden_dim)
+            self.actor_expansion = 4
+            self.actor_c_shift = 3.0
+
             self.critic_hidden_dim = params['critic']['hidden_feature']
+            self.critic_num_blocks = params['critic']['num_blocks']
             self.v_min = params['critic']['v_min']
             self.v_max = params['critic']['v_max']
             self.num_atoms = params['critic']['num_atoms']
+
+            self.critic_scaler_init = math.sqrt(2.0 / self.critic_hidden_dim)
+            self.critic_scaler_scale = math.sqrt(2.0 / self.critic_hidden_dim)
+            self.critic_alpha_init = 1.0 / (self.critic_num_blocks + 1)
+            self.critic_alpha_scale = 1.0 / math.sqrt(self.critic_hidden_dim)
+            self.critic_expansion = 4
+            self.critic_c_shift = 3.0
 
             self.has_space = 'space' in params
             self.value_shape = params.get('value_shape', 1)
@@ -157,8 +224,6 @@ class FastTD3Builder(network_builder.NetworkBuilder):
                 self.is_discrete = False
                 self.is_continuous = False
 
-# copied from https://github.com/younggyoseo/FastTD3/blob/main/fast_td3/fast_td3.py
-
 class DistributionalQNetwork(nn.Module):
     def __init__(
         self,
@@ -168,17 +233,47 @@ class DistributionalQNetwork(nn.Module):
         v_min: float,
         v_max: float,
         hidden_dim: int,
+        scaler_init: float,
+        scaler_scale: float,
+        alpha_init: float,
+        alpha_scale: float,
+        num_blocks: int,
+        c_shift: float,
+        expansion: int,
         device: torch.device = None,
     ):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(n_obs + n_act, hidden_dim, device=device),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim // 2, device=device),
-            nn.ReLU(),
-            nn.Linear(hidden_dim // 2, hidden_dim // 4, device=device),
-            nn.ReLU(),
-            nn.Linear(hidden_dim // 4, num_atoms, device=device),
+
+        self.embedder = HyperEmbedder(
+            in_dim=n_obs + n_act,
+            hidden_dim=hidden_dim,
+            scaler_init=scaler_init,
+            scaler_scale=scaler_scale,
+            c_shift=c_shift,
+            device=device,
+        )
+
+        self.encoder = nn.Sequential(
+            *[
+                HyperLERPBlock(
+                    hidden_dim=hidden_dim,
+                    scaler_init=scaler_init,
+                    scaler_scale=scaler_scale,
+                    alpha_init=alpha_init,
+                    alpha_scale=alpha_scale,
+                    expansion=expansion,
+                    device=device,
+                )
+                for _ in range(num_blocks)
+            ]
+        )
+
+        self.predictor = HyperCategoricalValue(
+            hidden_dim=hidden_dim,
+            num_bins=num_atoms,
+            scaler_init=1.0,
+            scaler_scale=1.0,
+            device=device,
         )
         self.v_min = v_min
         self.v_max = v_max
@@ -186,7 +281,9 @@ class DistributionalQNetwork(nn.Module):
 
     def forward(self, obs: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
         x = torch.cat([obs, actions], 1)
-        x = self.net(x)
+        x = self.embedder(x)
+        x = self.encoder(x)
+        x = self.predictor(x)
         return x
 
     def projection(
@@ -245,6 +342,13 @@ class Critic(nn.Module):
         v_min: float,
         v_max: float,
         hidden_dim: int,
+        scaler_init: float,
+        scaler_scale: float,
+        alpha_init: float,
+        alpha_scale: float,
+        num_blocks: int,
+        c_shift: float,
+        expansion: int,
         learn_task_embedding: bool,
         task_embedding_dim: int,
         num_tasks: int,
@@ -257,6 +361,13 @@ class Critic(nn.Module):
             num_atoms=num_atoms,
             v_min=v_min,
             v_max=v_max,
+            scaler_init=scaler_init,
+            scaler_scale=scaler_scale,
+            alpha_init=alpha_init,
+            alpha_scale=alpha_scale,
+            num_blocks=num_blocks,
+            c_shift=c_shift,
+            expansion=expansion,
             hidden_dim=hidden_dim,
             device=device,
         )
@@ -266,12 +377,15 @@ class Critic(nn.Module):
             num_atoms=num_atoms,
             v_min=v_min,
             v_max=v_max,
+            scaler_init=scaler_init,
+            scaler_scale=scaler_scale,
+            alpha_init=alpha_init,
+            alpha_scale=alpha_scale,
+            num_blocks=num_blocks,
+            c_shift=c_shift,
+            expansion=expansion,
             hidden_dim=hidden_dim,
             device=device,
-        )
-
-        self.register_buffer(
-            "q_support", torch.linspace(v_min, v_max, num_atoms, device=device)
         )
 
         self.task_embedding = torch.nn.Embedding(
@@ -281,6 +395,11 @@ class Critic(nn.Module):
         ) if learn_task_embedding else None
 
         self.num_tasks = num_tasks
+
+        self.register_buffer(
+            "q_support", torch.linspace(v_min, v_max, num_atoms, device=device)
+        )
+        self.device = device
 
     def forward(self, obs: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
         if self.task_embedding is not None:
@@ -303,7 +422,7 @@ class Critic(nn.Module):
         task_indices = torch.argmax(task_ids_one_hot, dim=1)
         task_embeddings = self.task_embedding(task_indices)
         obs = torch.cat([obs[..., : -self.num_tasks], task_embeddings], dim=-1)
-
+        
         q1_proj = self.qnet1.projection(
             obs,
             actions,
@@ -335,40 +454,53 @@ class Actor(nn.Module):
         n_obs: int,
         n_act: int,
         num_envs: int,
-        init_scale: float,
         hidden_dim: int,
-        learn_task_embedding,
-        task_embedding_dim: int,
+        num_blocks: int,
+        scaler_init: float,
+        scaler_scale: float,
+        alpha_init: float,
+        alpha_scale: float,
+        expansion: int,
+        c_shift: float,
+        learn_task_embedding: bool,
         num_tasks: int,
+        task_embedding_dim: int,
         std_min: float = 0.05,
         std_max: float = 0.8,
         device: torch.device = None,
     ):
         super().__init__()
         self.n_act = n_act
-        self.net = nn.Sequential(
-            nn.Linear(n_obs, hidden_dim, device=device),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim // 2, device=device),
-            nn.ReLU(),
-            nn.Linear(hidden_dim // 2, hidden_dim // 4, device=device),
-            nn.ReLU(),
-        )
-        self.fc_mu = nn.Sequential(
-            nn.Linear(hidden_dim // 4, n_act, device=device),
-            nn.Tanh(),
-        )
-        nn.init.normal_(self.fc_mu[0].weight, 0.0, init_scale)
-        nn.init.constant_(self.fc_mu[0].bias, 0.0)
 
-        noise_scales = (
-            torch.rand(num_envs, 1, device=device) * (std_max - std_min) + std_min
+        self.embedder = HyperEmbedder(
+            in_dim=n_obs,
+            hidden_dim=hidden_dim,
+            scaler_init=scaler_init,
+            scaler_scale=scaler_scale,
+            c_shift=c_shift,
+            device=device,
         )
-        self.register_buffer("noise_scales", noise_scales)
-
-        self.register_buffer("std_min", torch.as_tensor(std_min, device=device))
-        self.register_buffer("std_max", torch.as_tensor(std_max, device=device))
-        self.n_envs = num_envs
+        self.encoder = nn.Sequential(
+            *[
+                HyperLERPBlock(
+                    hidden_dim=hidden_dim,
+                    scaler_init=scaler_init,
+                    scaler_scale=scaler_scale,
+                    alpha_init=alpha_init,
+                    alpha_scale=alpha_scale,
+                    expansion=expansion,
+                    device=device,
+                )
+                for _ in range(num_blocks)
+            ]
+        )
+        self.predictor = HyperTanhPolicy(
+            hidden_dim=hidden_dim,
+            action_dim=n_act,
+            scaler_init=1.0,
+            scaler_scale=1.0,
+            device=device,
+        )
 
         self.task_embedding = torch.nn.Embedding(
             num_embeddings=num_tasks,
@@ -378,15 +510,26 @@ class Actor(nn.Module):
 
         self.num_tasks = num_tasks
 
+        noise_scales = (
+            torch.rand(num_envs, 1, device=device) * (std_max - std_min) + std_min
+        )
+        self.register_buffer("noise_scales", noise_scales)
+
+        self.register_buffer("std_min", torch.as_tensor(std_min, device=device))
+        self.register_buffer("std_max", torch.as_tensor(std_max, device=device))
+        self.n_envs = num_envs
+        self.device = device
+
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
         if self.task_embedding is not None:
             task_ids_one_hot = obs[..., -self.num_tasks :]
             task_indices = torch.argmax(task_ids_one_hot, dim=1)
             task_embeddings = self.task_embedding(task_indices)
             obs = torch.cat([obs[..., : -self.num_tasks], task_embeddings], dim=-1)
-        x = self.net(obs)
-        action = self.fc_mu(x)
-        return action
+        x = self.embedder(obs)
+        x = self.encoder(x)
+        x = self.predictor(x)
+        return x
 
     def explore(
         self, obs: torch.Tensor, dones: torch.Tensor = None, deterministic: bool = False
