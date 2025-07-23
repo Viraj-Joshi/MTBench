@@ -35,7 +35,7 @@ params:
     num_actors: ${....task.env.numEnvs}
     reward_shaper:
       scale_value: 1.0
-    gamma: 0.99
+    gamma: 0.97
     gradient_steps_per_itr: ${....gradient_steps_per_itr} # Number of optimization steps where new batch is sampled and critic + actor are updated
     use_cdq: True
 
@@ -47,9 +47,11 @@ params:
 
     actor_lr: 3e-4
     critic_lr: 3e-4
-    weight_decay: 0.1
+    critic_learning_rate_end: 3e-5
+    actor_learning_rate_end: 3e-5
+    weight_decay: 0
     critic_tau: 0.1
-    batch_size: 32768
+    batch_size: 8192
     nstep: ${....nstep}         # the number of steps to use for the multi-step return
     actor_update_freq: 2
     noise_clip: 0.5  # noise clip parameter of the Target Policy Smoothing Regularization

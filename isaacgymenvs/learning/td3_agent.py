@@ -98,16 +98,16 @@ class FastTD3Agent(BaseAlgorithm):
                                                  betas=self.config.get("critic_betas", [0.9, 0.999]),
                                                  weight_decay=self.config.get("weight_decay", 0.0))
         
-        # self.critic_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        #     self.critic_optimizer,
-        #     T_max=self.max_epochs,
-        #     eta_min=args.critic_learning_rate_end,  # Decay to 10% of initial lr
-        # )
-        # self.actor_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        #     self.actor_optimizer,
-        #     T_max=self.max_epochs,
-        #     eta_min=args.actor_learning_rate_end,  # Decay to 10% of initial lr
-        # )
+        self.critic_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            self.critic_optimizer,
+            T_max=self.max_epochs,
+            eta_min=float(self.config['critic_learning_rate_end'])
+        )
+        self.actor_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            self.actor_optimizer,
+            T_max=self.max_epochs,
+            eta_min=float(self.config['actor_learning_rate_end'])
+        )
         
         
         obs_dim = self.env_info["observation_space"].shape[0]
@@ -798,6 +798,9 @@ class FastTD3Agent(BaseAlgorithm):
             self.epoch_num += 1
             step_time, play_time, update_time, epoch_total_time, actor_losses, critic1_losses, critic2_losses, critic_grad_norms, actor_grad_norms, train_metrics,eval_metrics = self.train_epoch()
 
+            self.actor_scheduler.step()
+            self.critic_scheduler.step()
+
             total_time += epoch_total_time
 
             curr_frames = self.num_frames_per_epoch
@@ -1003,6 +1006,17 @@ class MTFastTD3Agent(FastTD3Agent):
                                                  lr=float(self.config["critic_lr"]),
                                                  betas=self.config.get("critic_betas", [0.9, 0.999]),
                                                  weight_decay=self.config.get("weight_decay", 0.0))
+
+        self.critic_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            self.critic_optimizer,
+            T_max=self.max_epochs,
+            eta_min=float(self.config['critic_learning_rate_end'])
+        )
+        self.actor_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            self.actor_optimizer,
+            T_max=self.max_epochs,
+            eta_min=float(self.config['actor_learning_rate_end'])
+        )
 
         self.algo_observer = config['features']['observer']
 

@@ -7,16 +7,17 @@ params:
     name: mt_fast_td3
 
   network:
-    name: fast_td3_a2c
+    name: fast_td3_simbav2
     space:
       continuous:
     actor:
       hidden_feature: 512
-      init_scale: .5
+      num_blocks: 1
       std_min: .001
       std_max: .4
     critic:
       hidden_feature: 1024
+      num_blocks: 2
       v_min: -10.0
       v_max: 10.0
       num_atoms: 101
@@ -46,11 +47,11 @@ params:
 
     actor_lr: 3e-4
     critic_lr: 3e-4
-    critic_learning_rate_end: 3e-4
-    actor_learning_rate_end: 3e-4
-    weight_decay: 0.1
+    critic_learning_rate_end: 3e-5
+    actor_learning_rate_end: 3e-5
+    weight_decay: 0
     critic_tau: 0.1
-    batch_size: 32768
+    batch_size: 8192
     nstep: ${....nstep}         # the number of steps to use for the multi-step return
     actor_update_freq: 2
     noise_clip: 0.5  # noise clip parameter of the Target Policy Smoothing Regularization

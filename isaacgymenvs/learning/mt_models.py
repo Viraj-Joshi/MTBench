@@ -67,6 +67,7 @@ class MTModelNetwork(nn.Module):
                 return value
 
 # taken from FastTD3: https://github.com/younggyoseo/FastTD3
+# need per-task normalization for the rewards for distributional critic
 class PerTaskEmpiricalNormalization(nn.Module):
     """Normalize mean and variance of values based on empirical values for each task."""
 
@@ -271,99 +272,6 @@ class PerTaskRewardNormalizer(nn.Module):
             task_ids (torch.Tensor): Task indices, shape [num_envs].
         """
         return self._scale_reward(rewards, task_ids)    
-        
-# # idea from BRC: https://arxiv.org/pdf/2505.23150
-# from rl_games.algos_torch.running_mean_std import RunningMeanStd
-# class PerTaskRewardNormalizer(nn.Module):
-#     def __init__(
-#         self,
-#         num_tasks: int,
-#         gamma: float,
-#         device: torch.device,
-#         g_max: float = 10.0,
-#         epsilon: float = 1e-8,
-#     ):
-#         """
-#         Per-task reward normalizer using RunningMeanStd.
-#         """
-#         super().__init__()
-#         self.num_tasks = num_tasks
-#         self.gamma = gamma
-#         self.g_max = g_max
-#         self.epsilon = epsilon
-#         self.device = device
-
-#         # Per-task running estimate of the discounted return
-#         self.register_buffer("G", torch.zeros(num_tasks, device=device))
-#         # Per-task running-max of the discounted return
-#         self.register_buffer("G_r_max", torch.zeros(num_tasks, device=device))
-        
-#         # Use nn.ModuleDict to hold a RunningMeanStd instance for each task
-#         self.G_rms = nn.ModuleDict({
-#             str(i): RunningMeanStd(insize=(1,)) for i in range(num_tasks)
-#         })
-
-#     def _scale_reward(
-#         self, rewards: torch.Tensor, task_ids: torch.Tensor
-#     ) -> torch.Tensor:
-#         """Scales rewards using per-task statistics."""
-#         # Create tensors to hold the statistics for the current batch
-#         batch_stds = torch.ones_like(rewards, dtype=torch.float32, device=self.device)
-        
-#         # Gather G_r_max for the tasks in the batch
-#         g_r_max_for_batch = self.G_r_max.gather(0, task_ids)
-
-#         # Populate the stds tensor from the corresponding normalizers
-#         for i in range(self.num_tasks):
-#             mask = (task_ids == i)
-#             if mask.any():
-#                 rms_module = self.G_rms[str(i)]
-#                 std = torch.sqrt(rms_module.running_var.float() + rms_module.epsilon)
-#                 batch_stds[mask] = std.item()
-
-#         var_denominator = batch_stds + self.epsilon
-#         min_required_denominator = g_r_max_for_batch / self.g_max
-#         denominator = torch.maximum(var_denominator, min_required_denominator)
-
-#         return rewards / (denominator + self.epsilon)
-
-#     def update_stats(
-#         self, rewards: torch.Tensor, dones: torch.Tensor, task_ids: torch.Tensor
-#     ):
-#         """Updates the running discounted return and its statistics for each task."""
-#         if not (rewards.shape == dones.shape == task_ids.shape):
-#             raise ValueError("rewards, dones, and task_ids must have the same shape.")
-
-#         # === Update G (running discounted return) ===
-#         prev_G = self.G.gather(0, task_ids)
-#         new_G = self.gamma * (1 - dones.float()) * prev_G + rewards
-#         self.G.scatter_(0, task_ids, new_G)
-
-#         # === Update G_rms (statistics of G) ===
-#         # Iterate through unique tasks in the batch and update their stats
-#         unique_tasks = torch.unique(task_ids)
-#         for task_id_tensor in unique_tasks:
-#             task_id = task_id_tensor.item()
-#             mask = (task_ids == task_id)
-#             g_for_task = new_G[mask]
-            
-#             # The forward pass of RunningMeanStd updates its internal stats
-#             if g_for_task.numel() > 0:
-#                  # Pass input as [batch, 1]
-#                 self.G_rms[str(task_id)](g_for_task.unsqueeze(-1))
-
-#         # === Update G_r_max (running max of |G|) ===
-#         prev_G_r_max = self.G_r_max.gather(0, task_ids)
-#         updated_G_r_max = torch.maximum(prev_G_r_max, torch.abs(new_G))
-#         self.G_r_max.scatter_(0, task_ids, updated_G_r_max)
-
-
-#     def forward(self, rewards: torch.Tensor, task_ids: torch.Tensor) -> torch.Tensor:
-#         """Normalizes rewards. During training, stats must be updated via update_stats()."""
-#         if not (rewards.shape == task_ids.shape):
-#             raise ValueError("rewards and task_ids must have the same shape.")
-#         return self._scale_reward(rewards, task_ids)
-
 
 class MTModelA2CContinuousLogStd(ModelA2CContinuousLogStd):
     # Multitask variance of the continuous_a2c_logstd model

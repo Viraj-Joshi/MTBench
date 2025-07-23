@@ -3,11 +3,11 @@
 # 8 16 has 3rd highest success rate
 # 32 16 has highest success rate
 task_counts=[410,410,410,410,410,410,409,409,409,409]
-for gradient_steps_per_itr in 4
+for gradient_steps_per_itr in 2
 do
 	for nstep in 8
 	do
-		for i in 42 43 44
+		for i in 42
 		do
 			python isaacgymenvs/train.py \
 			task_id=[4,16,17,18,28,31,38,40,48,49] \
@@ -21,11 +21,11 @@ do
 			record_videos=False \
 			wandb_activate=False \
 			wandb_project=IsaacGym \
-			sim_device=cuda:1 \
-			rl_device=cuda:1 \
+			sim_device=cuda:0 \
+			rl_device=cuda:0 \
 			reward_scale=1 \
 			termination_on_success=False \
-			max_iterations=12000 \
+			max_iterations=24000 \
 			headless=True \
 			gradient_steps_per_itr=$gradient_steps_per_itr \
 			nstep=$nstep

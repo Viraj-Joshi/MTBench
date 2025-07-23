@@ -299,10 +299,11 @@ class Critic(nn.Module):
         discount: float,
     ) -> torch.Tensor:
         """Projection operation that includes q_support directly"""
-        task_ids_one_hot = obs[..., -self.num_tasks :]
-        task_indices = torch.argmax(task_ids_one_hot, dim=1)
-        task_embeddings = self.task_embedding(task_indices)
-        obs = torch.cat([obs[..., : -self.num_tasks], task_embeddings], dim=-1)
+        if self.task_embedding is not None:
+            task_ids_one_hot = obs[..., -self.num_tasks :]
+            task_indices = torch.argmax(task_ids_one_hot, dim=1)
+            task_embeddings = self.task_embedding(task_indices)
+            obs = torch.cat([obs[..., : -self.num_tasks], task_embeddings], dim=-1)
 
         q1_proj = self.qnet1.projection(
             obs,
