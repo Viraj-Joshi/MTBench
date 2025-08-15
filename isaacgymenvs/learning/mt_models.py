@@ -36,6 +36,8 @@ class MTModelNetwork(nn.Module):
                 self.running_mean_stds = nn.ModuleList([RunningMeanStd(self.true_obs_dim) for _ in range(task_embedding_dim)])
         
     def norm_obs(self, observation, task_indices):
+        if observation.shape[0] != task_indices.shape[0]:
+            raise ValueError(f"number of observations {observation.shape[0]} does not match number of task indices {task_indices.shape[0]}")
         if self.normalize_input:
             true_obs = observation[:, :self.true_obs_dim]
             task_indices = task_indices.squeeze(-1)
@@ -64,6 +66,212 @@ class MTModelNetwork(nn.Module):
             else:
                 return value
 
+# taken from FastTD3: https://github.com/younggyoseo/FastTD3
+# need per-task normalization for the rewards for distributional critic
+class PerTaskEmpiricalNormalization(nn.Module):
+    """Normalize mean and variance of values based on empirical values for each task."""
+
+    def __init__(
+        self,
+        num_tasks: int,
+        shape: tuple,
+        device: torch.device,
+        eps: float = 1e-2,
+        until: int = None,
+    ):
+        """
+        Initialize PerTaskEmpiricalNormalization module.
+
+        Args:
+            num_tasks (int): The total number of tasks.
+            shape (int or tuple of int): Shape of input values except batch axis.
+            eps (float): Small value for stability.
+            until (int or None): If specified, learns until the sum of batch sizes
+                                 for a specific task exceeds this value.
+        """
+        super().__init__()
+        if not isinstance(shape, tuple):
+            shape = (shape,)
+        self.num_tasks = num_tasks
+        self.shape = shape
+        self.eps = eps
+        self.until = until
+        self.device = device
+
+        # Buffers now have a leading dimension for tasks
+        self.register_buffer("_mean", torch.zeros(num_tasks, *shape).to(device))
+        self.register_buffer("_var", torch.ones(num_tasks, *shape).to(device))
+        self.register_buffer("_std", torch.ones(num_tasks, *shape).to(device))
+        self.register_buffer(
+            "count", torch.zeros(num_tasks, dtype=torch.long).to(device)
+        )
+
+    def forward(
+        self, x: torch.Tensor, task_ids: torch.Tensor, center: bool = True
+    ) -> torch.Tensor:
+        """
+        Normalize the input tensor `x` using statistics for the given `task_ids`.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape [num_envs, *shape].
+            task_ids (torch.Tensor): Tensor of task indices, shape [num_envs].
+            center (bool): If True, center the data by subtracting the mean.
+        """
+        if x.shape[1:] != self.shape:
+            raise ValueError(f"Expected input shape (*, {self.shape}), got {x.shape}")
+        if x.shape[0] != task_ids.shape[0]:
+            raise ValueError("Batch size of x and task_ids must match.")
+
+        # Gather the stats for the tasks in the current batch
+        # Reshape task_ids for broadcasting: [num_envs] -> [num_envs, 1, ...]
+        view_shape = (task_ids.shape[0],) + (1,) * len(self.shape)
+        task_ids_expanded = task_ids.view(view_shape).expand_as(x)
+
+        mean = self._mean.gather(0, task_ids_expanded)
+        std = self._std.gather(0, task_ids_expanded)
+
+        if self.training:
+            self.update(x, task_ids)
+
+        if center:
+            return (x - mean) / (std + self.eps)
+        else:
+            return x / (std + self.eps)
+
+    @torch.jit.unused
+    def update(self, x: torch.Tensor, task_ids: torch.Tensor):
+        """Update running statistics for the tasks present in the batch."""
+        unique_tasks = torch.unique(task_ids)
+
+        for task_id in unique_tasks:
+            if self.until is not None and self.count[task_id] >= self.until:
+                continue
+
+            # Create a mask to select data for the current task
+            mask = task_ids == task_id
+            x_task = x[mask]
+            batch_size = x_task.shape[0]
+
+            if batch_size == 0:
+                continue
+
+            # Update count for this task
+            old_count = self.count[task_id].clone()
+            new_count = old_count + batch_size
+
+            # Update mean
+            task_mean = self._mean[task_id]
+            batch_mean = torch.mean(x_task, dim=0)
+            delta = batch_mean - task_mean
+            self._mean[task_id].copy_(task_mean + (batch_size / new_count) * delta)
+
+            # Update variance using Chan's parallel algorithm
+            if old_count > 0:
+                batch_var = torch.var(x_task, dim=0, unbiased=False)
+                m_a = self._var[task_id] * old_count
+                m_b = batch_var * batch_size
+                M2 = m_a + m_b + (delta**2) * (old_count * batch_size / new_count)
+                self._var[task_id].copy_(M2 / new_count)
+            else:
+                # For the first batch of this task
+                self._var[task_id].copy_(torch.var(x_task, dim=0, unbiased=False))
+
+            self._std[task_id].copy_(torch.sqrt(self._var[task_id]))
+            self.count[task_id].copy_(new_count)
+
+
+class PerTaskRewardNormalizer(nn.Module):
+    def __init__(
+        self,
+        num_tasks: int,
+        gamma: float,
+        device: torch.device,
+        g_max: float = 10.0,
+        epsilon: float = 1e-8,
+    ):
+        """
+        Per-task reward normalizer, motivation comes from BRC (https://arxiv.org/abs/2505.23150v1)
+        """
+        super().__init__()
+        self.num_tasks = num_tasks
+        self.gamma = gamma
+        self.g_max = g_max
+        self.epsilon = epsilon
+        self.device = device
+
+        # Per-task running estimate of the discounted return
+        self.register_buffer("G", torch.zeros(num_tasks, device=device))
+        # Per-task running-max of the discounted return
+        self.register_buffer("G_r_max", torch.zeros(num_tasks, device=device))
+        # Use the new per-task normalizer for the statistics of G
+        self.G_rms = PerTaskEmpiricalNormalization(
+            num_tasks=num_tasks, shape=(1,), device=device
+        )
+
+    def _scale_reward(
+        self, rewards: torch.Tensor, task_ids: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Scales rewards using per-task statistics.
+
+        Args:
+            rewards (torch.Tensor): Reward tensor, shape [num_envs].
+            task_ids (torch.Tensor): Task indices, shape [num_envs].
+        """
+        # Gather stats for the tasks in the batch
+        std_for_batch = self.G_rms._std.gather(0, task_ids.unsqueeze(-1)).squeeze(-1)
+        g_r_max_for_batch = self.G_r_max.gather(0, task_ids)
+
+        var_denominator = std_for_batch + self.epsilon
+        min_required_denominator = g_r_max_for_batch / self.g_max
+        denominator = torch.maximum(var_denominator, min_required_denominator)
+
+        # Add a small epsilon to the final denominator to prevent division by zero
+        # in case g_r_max is also zero.
+        return rewards / (denominator + self.epsilon)
+
+    def update_stats(
+        self, rewards: torch.Tensor, dones: torch.Tensor, task_ids: torch.Tensor
+    ):
+        """
+        Updates the running discounted return and its statistics for each task.
+
+        Args:
+            rewards (torch.Tensor): Reward tensor, shape [num_envs].
+            dones (torch.Tensor): Done tensor, shape [num_envs].
+            task_ids (torch.Tensor): Task indices, shape [num_envs].
+        """
+        if not (rewards.shape == dones.shape == task_ids.shape):
+            raise ValueError("rewards, dones, and task_ids must have the same shape.")
+
+        # === Update G (running discounted return) ===
+        # Gather the previous G values for the tasks in the batch
+        prev_G = self.G.gather(0, task_ids)
+        # Update G for each environment based on its own reward and done signal
+        new_G = self.gamma * (1 - dones.float()) * prev_G + rewards
+        # Scatter the updated G values back to the main buffer
+        self.G.scatter_(0, task_ids, new_G)
+
+        # === Update G_rms (statistics of G) ===
+        # The update function handles the per-task logic internally
+        self.G_rms.update(new_G.unsqueeze(-1), task_ids)
+
+        # === Update G_r_max (running max of |G|) ===
+        prev_G_r_max = self.G_r_max.gather(0, task_ids)
+        # Update the max for each environment
+        updated_G_r_max = torch.maximum(prev_G_r_max, torch.abs(new_G))
+        # Scatter the new maxes back to the main buffer
+        self.G_r_max.scatter_(0, task_ids, updated_G_r_max)
+
+    def forward(self, rewards: torch.Tensor, task_ids: torch.Tensor) -> torch.Tensor:
+        """
+        Normalizes rewards. During training, it also updates the running statistics.
+
+        Args:
+            rewards (torch.Tensor): Reward tensor, shape [num_envs].
+            task_ids (torch.Tensor): Task indices, shape [num_envs].
+        """
+        return self._scale_reward(rewards, task_ids)    
 
 class MTModelA2CContinuousLogStd(ModelA2CContinuousLogStd):
     # Multitask variance of the continuous_a2c_logstd model
@@ -110,7 +318,6 @@ class MTModelA2CContinuousLogStd(ModelA2CContinuousLogStd):
             input_dict['obs'] = self.norm_obs(input_dict['obs'], task_indices)
             # ---------------------
             mu, logstd, value, states = self.a2c_network(input_dict)
-            import ipdb; ipdb.set_trace()
             sigma = torch.exp(logstd)
             distr = torch.distributions.Normal(mu, sigma, validate_args=False)
 
@@ -232,20 +439,18 @@ class MTModelFastTD3Continuous(BaseModel):
     
     def build(self, config):
         obs_shape = config['input_shape']
-        normalize_value = config['normalize_value']
         normalize_input = config['normalize_input']
-        value_size = config.get('value_size', 1)
         if 'task_indices' not in config:
             raise KeyError("task_indices not found for a multi task model")
         task_indices = config["task_indices"]
         task_embedding_dim = torch.unique(task_indices).shape[0]
         return self.Network(self.network_builder.build(self.model_class, **config), obs_shape=obs_shape,
-            normalize_value=normalize_value, normalize_input=normalize_input, value_size=value_size, task_embedding_dim=task_embedding_dim)
+            normalize_value=False, normalize_input=normalize_input, value_size=1, task_embedding_dim=task_embedding_dim)
 
     class Network(MTModelNetwork):
-        def __init__(self, sac_network,**kwargs):
+        def __init__(self, td3_network,**kwargs):
             MTModelNetwork.__init__(self,**kwargs)
-            self.td3_network = sac_network
+            self.td3_network = td3_network
             self.kwargs = kwargs
 
         def critic(self, obs, action):

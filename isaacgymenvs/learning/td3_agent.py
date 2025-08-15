@@ -14,6 +14,7 @@ from rl_games.common.a2c_common import print_statistics
 from rl_games.interfaces.base_algorithm import BaseAlgorithm
 from rl_games.algos_torch import  model_builder
 
+from isaacgymenvs.learning.mt_models import PerTaskRewardNormalizer
 from isaacgymenvs.learning.replay.nstep_replay import NStepReplay
 from isaacgymenvs.learning.replay.simple_replay import ReplayBuffer
 
@@ -36,9 +37,9 @@ class FastTD3Agent(BaseAlgorithm):
         self.replay_buffer_size = config["replay_buffer_size"]
         self.horizon = config["horizon"]
         self.normalize_input = config.get("normalize_input", False)
-        self.normalize_value = config.get("normalize_value", False)
         self.gradient_steps_per_itr = config["gradient_steps_per_itr"]
-        self.grad_norm = config["grad_norm"]
+        self.use_grad_norm = config['use_grad_norm']
+        self.grad_norm = config.get('grad_norm', 0.5)
         self.noise_clip = config["noise_clip"]
         self.policy_noise = config["policy_noise"]
         self.actor_update_freq = config["actor_update_freq"]
@@ -46,6 +47,8 @@ class FastTD3Agent(BaseAlgorithm):
         self.disable_bootstrap = config.get("disable_bootstrap", False)
         amp = config.get("amp", False)
         amp_dtype = config.get("amp_dtype", "bf16")
+        self.use_cdq = config.get["use_cdq"]
+        self.eval_interval = config.get("eval_interval", 1000)
 
         self.amp_enabled = amp and torch.cuda.is_available()
         self.amp_device_type = (
@@ -79,7 +82,6 @@ class FastTD3Agent(BaseAlgorithm):
             'num_envs': self.num_actors,
             'device': self.device,
             'normalize_input': self.normalize_input,
-            'normalize_value': self.normalize_value,
         }
         self.model = self.network.build(net_config)
         self.model.to(self._device)
@@ -96,16 +98,16 @@ class FastTD3Agent(BaseAlgorithm):
                                                  betas=self.config.get("critic_betas", [0.9, 0.999]),
                                                  weight_decay=self.config.get("weight_decay", 0.0))
         
-        # self.critic_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        #     self.critic_optimizer,
-        #     T_max=self.max_epochs,
-        #     eta_min=args.critic_learning_rate_end,  # Decay to 10% of initial lr
-        # )
-        # self.actor_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        #     self.actor_optimizer,
-        #     T_max=self.max_epochs,
-        #     eta_min=args.actor_learning_rate_end,  # Decay to 10% of initial lr
-        # )
+        self.critic_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            self.critic_optimizer,
+            T_max=self.max_epochs,
+            eta_min=float(self.config['critic_learning_rate_end'])
+        )
+        self.actor_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            self.actor_optimizer,
+            T_max=self.max_epochs,
+            eta_min=float(self.config['actor_learning_rate_end'])
+        )
         
         
         obs_dim = self.env_info["observation_space"].shape[0]
@@ -142,7 +144,6 @@ class FastTD3Agent(BaseAlgorithm):
         print('Env info:')
         print(self.env_info)
 
-        self.rewards_shaper = config['reward_shaper']
         self.observation_space = self.env_info['observation_space']
         self.weight_decay = config.get('weight_decay', 0.0)
         #self.use_action_masks = config.get('use_action_masks', False)
@@ -159,7 +160,6 @@ class FastTD3Agent(BaseAlgorithm):
         self.save_freq = config.get('save_frequency', 0)
 
         self.network = config['network']
-        self.rewards_shaper = config['reward_shaper']
         self.num_agents = self.env_info.get('agents', 1)
         self.obs_shape = self.observation_space.shape
 
@@ -324,13 +324,17 @@ class FastTD3Agent(BaseAlgorithm):
                 qf1_next_target_value = self.model.td3_network.critic_target.get_value(qf1_next_target_projected)
                 qf2_next_target_value = self.model.td3_network.critic_target.get_value(qf2_next_target_projected)
 
-                qf_next_target_dist = torch.where(
-                    qf1_next_target_value.unsqueeze(1)
-                    < qf2_next_target_value.unsqueeze(1),
-                    qf1_next_target_projected,
-                    qf2_next_target_projected,
-                )
-                qf1_next_target_dist = qf2_next_target_dist = qf_next_target_dist
+                if self.use_cdq:
+                    qf_next_target_dist = torch.where(
+                        qf1_next_target_value.unsqueeze(1)
+                        < qf2_next_target_value.unsqueeze(1),
+                        qf1_next_target_projected,
+                        qf2_next_target_projected,
+                    )
+                    qf1_next_target_dist = qf2_next_target_dist = qf_next_target_dist
+                else:
+                    qf1_next_target_dist = qf1_next_target_projected
+                    qf2_next_target_dist = qf2_next_target_projected
 
             qf1, qf2 = self.model.critic(obs, action)
             qf1_loss = -torch.sum(
@@ -345,10 +349,13 @@ class FastTD3Agent(BaseAlgorithm):
         self.scaler.scale(qf_loss).backward()
         self.scaler.unscale_(self.critic_optimizer)
 
-        critic_grad_norm = torch.nn.utils.clip_grad_norm_(
-            self.model.td3_network.critic.parameters(),
-            max_norm=self.grad_norm if self.grad_norm > 0 else float("inf"),
-        )
+        if self.use_grad_norm:
+            critic_grad_norm = torch.nn.utils.clip_grad_norm_(
+                self.model.td3_network.critic.parameters(),
+                max_norm=self.grad_norm if self.grad_norm > 0 else float("inf"),
+            )
+        else:
+            critic_grad_norm = torch.tensor(0.0, device=self._device)
 
         self.scaler.step(self.critic_optimizer)
         self.scaler.update()
@@ -359,30 +366,29 @@ class FastTD3Agent(BaseAlgorithm):
         with autocast(
             device_type=self.amp_device_type, dtype=self.amp_dtype, enabled=self.amp_enabled
         ): 
-            for p in self.model.td3_network.critic.parameters():
-                p.requires_grad = False
-
             action = self.model.actor(obs)
             qf1, qf2 =  self.model.td3_network.critic(obs, action)
             qf1_value = self.model.td3_network.critic.get_value(F.softmax(qf1, dim=1))
             qf2_value = self.model.td3_network.critic.get_value(F.softmax(qf2, dim=1))
-            qf_value = torch.minimum(qf1_value, qf2_value)
-
+            if self.use_cdq:
+                qf_value = torch.minimum(qf1_value, qf2_value)
+            else:
+                qf_value = (qf1_value + qf2_value) / 2.0
             actor_loss = -qf_value.mean()
 
         self.actor_optimizer.zero_grad(set_to_none=True)
         
         self.scaler.scale(actor_loss).backward()
         self.scaler.unscale_(self.actor_optimizer)
-        actor_grad_norm = torch.nn.utils.clip_grad_norm_(
-            self.model.td3_network.actor.parameters(),
-            max_norm=self.grad_norm if self.grad_norm > 0 else float("inf"),
-        )
+        if self.use_grad_norm:
+            actor_grad_norm = torch.nn.utils.clip_grad_norm_(
+                self.model.td3_network.actor.parameters(),
+                max_norm=self.grad_norm if self.grad_norm > 0 else float("inf"),
+            )
+        else:
+            actor_grad_norm = torch.tensor(0.0, device=self._device)
         self.scaler.step(self.actor_optimizer)
         self.scaler.update()
-
-        for p in self.model.td3_network.critic.parameters():
-            p.requires_grad = True
 
         return actor_loss.detach(), actor_grad_norm.detach()
 
@@ -392,9 +398,15 @@ class FastTD3Agent(BaseAlgorithm):
                                     (1.0 - tau) * target_param.data)
 
     def update(self, epoch_num, gradient_step):
-        obs, action, reward, next_obs, done, effective_n_steps = self.replay_buffer.sample_batch(self.batch_size)
+        obs, action, raw_reward, next_obs, done, effective_n_steps = self.replay_buffer.sample_batch(self.batch_size)
+        if self.normalize_reward:
+            task_ids_one_hot = obs[...,-self.num_tasks:]
+            task_indices = torch.argmax(task_ids_one_hot, dim=1)
+            reward = self.reward_normalizer(raw_reward.squeeze(-1), task_indices)
         not_done = ~(done.bool())
 
+        # obs = self.obs_normalizer(obs)
+        # next_obs = self.obs_normalizer(next_obs)
         obs = self.preproc_obs(obs)
         next_obs = self.preproc_obs(next_obs)
         critic_loss, critic1_loss, critic2_loss, critic_grad_norm = self.update_critic(obs, action, reward, next_obs, not_done, effective_n_steps)
@@ -421,8 +433,7 @@ class FastTD3Agent(BaseAlgorithm):
         #         plt.grid(True, which='both', linestyle='--', linewidth=0.5)
         #         plt.show()
 
-        #         # To save the figure, uncomment the following line:
-        #         plt.savefig(f'debug/debug2/critic_distribution_single_sample_{epoch_num}.png')
+        #         plt.savefig(f'debug/critic_distribution_single_sample_{epoch_num}.png')
         #         plt.close()
                 
         if gradient_step % self.actor_update_freq == 1:
@@ -489,6 +500,9 @@ class FastTD3Agent(BaseAlgorithm):
         actions = self.preprocess_actions(actions)
         obs, rewards, dones, infos = self.vec_env.step(actions) # (obs_space) -> (n, obs_space)
 
+        if self.normalize_reward:
+            self.reward_normalizer.update_stats(rewards.squeeze(-1), dones, self.all_task_indices)
+
         if self.is_tensor_obses:
             return self.obs_to_tensors(obs), rewards.to(self._device), dones.to(self._device), infos
         else:
@@ -503,6 +517,7 @@ class FastTD3Agent(BaseAlgorithm):
         return obs
 
     def act(self, obs):
+        # obs = self.obs_normalizer(obs)
         obs = self.preproc_obs(obs)
         action = self.model.td3_network.actor.explore(obs,self.dones)
 
@@ -543,8 +558,8 @@ class FastTD3Agent(BaseAlgorithm):
             obs = obs['obs']
 
         # reset logging from before evaluate was called
-        eval_env.cumulatives['reward'] = torch.zeros(self.num_actors, device=self.device)
-        eval_env.cumulatives['success'] = torch.zeros(self.num_actors, device=self.device)
+        eval_env.cumulatives['reward'][:] = 0
+        eval_env.cumulatives['success'][:] = 0
 
         # Initialize tensors to store episode rewards and successes
         episode_rewards = torch.zeros(self.num_actors, device=self.device)
@@ -555,6 +570,9 @@ class FastTD3Agent(BaseAlgorithm):
             with torch.no_grad(), autocast(
                 device_type=self.amp_device_type, dtype=self.amp_dtype, enabled=self.amp_enabled
             ):
+                if isinstance(obs, dict):
+                    obs = obs['obs']
+                # obs = self.obs_normalizer(obs,update=False)
                 obs = self.preproc_obs(obs)
                 actions = self.model.actor(obs) # no noise in evaluation
 
@@ -630,7 +648,6 @@ class FastTD3Agent(BaseAlgorithm):
         next_obs_processed = obs.clone()
 
         for s in range(horizon):
-            self.set_eval()
             with torch.no_grad(),autocast(
                     device_type=self.amp_device_type, dtype=self.amp_dtype, enabled=self.amp_enabled
             ):
@@ -673,7 +690,6 @@ class FastTD3Agent(BaseAlgorithm):
                 next_obs_processed = next_obs['obs']
 
             self.obs = next_obs.copy() # changed from clone
-            rewards = self.rewards_shaper(rewards)
 
             if isinstance(obs, dict):
                 obs = self.obs['obs']
@@ -717,29 +733,7 @@ class FastTD3Agent(BaseAlgorithm):
         total_time = total_time_end - total_time_start
         play_time = total_time - total_update_time
 
-        if self.vec_env.env.isSeperateEvaluation and self.epoch_num % self.vec_env.env.evalInterval == 0: 
-            self.set_eval()
-            eval_metrics = self.evaluate()
-            # hacky way to reset the environment after evaluation
-            self.vec_env.env.reset_idx(torch.arange(self.num_actors, device=self.device))
-            self.vec_env.env.compute_observations()
-            self.obs = self.env_reset()
-
-            # randomize progress_buf again
-            total_count = 0
-            for tid, env_count in zip(self.vec_env.env.task_idx, self.vec_env.env.task_env_count):
-                self.vec_env.env.env_id_to_task_id[total_count:total_count+env_count] = [tid for _ in range(env_count)]
-                if not self.vec_env.env.init_at_random_progress or tid in self.vec_env.env.exempted_init_at_random_progress_tasks:
-                    self.vec_env.env.progress_buf[total_count:total_count+env_count] = 0
-                else:
-                    self.vec_env.env.progress_buf[total_count:total_count+env_count] = torch.randint_like(self.vec_env.env.progress_buf[total_count:total_count+env_count], high=int(self.vec_env.env.max_episode_length))
-            
-                total_count += env_count
-            
-            self.game_rewards.clear()
-            self.game_lengths.clear()
-            self.mean_rewards = self.last_mean_rewards = -1000000000
-        self.set_train()
+        # record training metrics before evaluation because evaluation will reset the environment
         if 'episode' in infos: 
             for task_idx in torch.unique(self.all_task_indices):
                 task_name = self.ordered_task_names[task_idx.item()]
@@ -754,13 +748,36 @@ class FastTD3Agent(BaseAlgorithm):
                     # train_metrics[f'train/{task_name}/avg_reward'] = task_avg_reward
                     
                     # print(f"Task: {task_name:<25} | Avg Success Rate: {task_success_rate:.4f}")
-            
             overall_avg_success = (success_count_per_episode>0).float().mean().item()
             train_metrics['train/overall_success_rate'] = overall_avg_success
             # train_metrics['train/overall_avg_reward'] = episode_rewards.mean().item()
 
             # print(f"\nOverall Average Success Rate: {overall_avg_success:.4f}\n")
             # print(f"Overall Average Reward: {episode_rewards.mean().item():.4f}\n")
+
+        if self.epoch_num % self.evaluation_interval == 0: 
+            self.set_eval()
+            eval_metrics = self.evaluate()
+            # hacky way to reset the environment after evaluation
+            self.vec_env.env.reset_idx(torch.arange(self.num_actors, device=self.device))
+            self.vec_env.env.compute_observations()
+            self.obs = self.env_reset()
+
+            # randomize progress_buf again
+            # total_count = 0
+            # for tid, env_count in zip(self.vec_env.env.task_idx, self.vec_env.env.task_env_count):
+            #     self.vec_env.env.env_id_to_task_id[total_count:total_count+env_count] = [tid for _ in range(env_count)]
+            #     if not self.vec_env.env.init_at_random_progress or tid in self.vec_env.env.exempted_init_at_random_progress_tasks:
+            #         self.vec_env.env.progress_buf[total_count:total_count+env_count] = 0
+            #     else:
+            #         self.vec_env.env.progress_buf[total_count:total_count+env_count] = torch.randint_like(self.vec_env.env.progress_buf[total_count:total_count+env_count], high=int(self.vec_env.env.max_episode_length))
+            
+            #     total_count += env_count
+            
+            # self.game_rewards.clear()
+            # self.game_lengths.clear()
+            # self.mean_rewards = self.last_mean_rewards = -1000000000
+        self.set_train()
 
         return step_time, play_time, total_update_time, total_time, actor_losses, critic1_loss_list, critic2_loss_list, critic_grad_norm_list, actor_grad_norm_list, train_metrics, eval_metrics
 
@@ -780,6 +797,9 @@ class FastTD3Agent(BaseAlgorithm):
         while True:
             self.epoch_num += 1
             step_time, play_time, update_time, epoch_total_time, actor_losses, critic1_losses, critic2_losses, critic_grad_norms, actor_grad_norms, train_metrics,eval_metrics = self.train_epoch()
+
+            self.actor_scheduler.step()
+            self.critic_scheduler.step()
 
             total_time += epoch_total_time
 
@@ -805,6 +825,9 @@ class FastTD3Agent(BaseAlgorithm):
                 self.writer.add_scalar('losses/a_loss', torch_ext.mean_list(actor_losses).item(), self.frame)
                 self.writer.add_scalar('losses/c1_loss', torch_ext.mean_list(critic1_losses).item(), self.frame)
                 self.writer.add_scalar('losses/c2_loss', torch_ext.mean_list(critic2_losses).item(), self.frame)
+
+                for key,value in train_metrics.items():
+                    self.writer.add_scalar(key, value, self.frame)
                 
                 # add eval metrics
                 for key, value in eval_metrics.items():
@@ -905,17 +928,18 @@ class MTFastTD3Agent(FastTD3Agent):
         self.replay_buffer_size = config["replay_buffer_size"]
         self.horizon = config["horizon"]
         self.normalize_input = config.get("normalize_input", False)
-        self.normalize_value = config.get("normalize_value", False)
+        self.normalize_reward = config.get('normalize_reward', False)
         self.gradient_steps_per_itr = config["gradient_steps_per_itr"]
-        self.grad_norm = config["grad_norm"]
+        self.use_grad_norm = config['use_grad_norm']
+        self.grad_norm = config.get('grad_norm', 0.5)
         self.noise_clip = config["noise_clip"]
         self.policy_noise = config["policy_noise"]
         self.actor_update_freq = config["actor_update_freq"]
+        self.use_cdq = config["use_cdq"]
         self.nstep = config.get("nstep", 1)
         self.disable_bootstrap = config.get("disable_bootstrap", False)
         amp = config.get("amp", False)
         amp_dtype = config.get("amp_dtype", "bf16")
-
         self.amp_enabled = amp and torch.cuda.is_available()
         self.amp_device_type = (
             "cuda"
@@ -928,6 +952,7 @@ class MTFastTD3Agent(FastTD3Agent):
 
         self.use_replay_ratio_scaling = config.get("use_replay_ratio_scaling", False)
         self.replay_ratio_scaling_update_freq = config.get("replay_ratio_scaling_update_freq", None)
+        self.evaluation_interval = config.get("evaluation_interval", 1000)
 
         # TODO: double-check! To use bootstrap instead?
         self.max_env_steps = config.get("max_env_steps", 1000) # temporary, in future we will use other approach
@@ -950,15 +975,20 @@ class MTFastTD3Agent(FastTD3Agent):
         self.all_task_indices : torch.Tensor = self.vec_env.env.extras["task_indices"]
         self.ordered_task_names : list[str] = self.vec_env.env.extras["ordered_task_names"]
 
-        self.task_embedding_dim = torch.unique(self.all_task_indices).shape[0]
-        
+        learn_task_embedding = config.get('learn_task_embedding', False)
+        if learn_task_embedding:
+            self.task_embedding_dim = config['task_embedding_dim']
+        else: 
+            self.task_embedding_dim = torch.unique(self.all_task_indices).shape[0]
+        self.num_tasks = torch.unique(self.all_task_indices).shape[0]
+
         net_config = {
             'action_shape' : self.env_info["action_space"].shape,
             'input_shape' : obs_shape,
             'num_envs': self.num_actors,
             'device': self.device,
             'normalize_input': self.normalize_input,
-            'normalize_value': self.normalize_value,
+            'learn_task_embedding': learn_task_embedding,
             'task_indices': self.all_task_indices,
             'task_embedding_dim': self.task_embedding_dim,
         }
@@ -977,6 +1007,17 @@ class MTFastTD3Agent(FastTD3Agent):
                                                  betas=self.config.get("critic_betas", [0.9, 0.999]),
                                                  weight_decay=self.config.get("weight_decay", 0.0))
 
+        self.critic_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            self.critic_optimizer,
+            T_max=self.max_epochs,
+            eta_min=float(self.config['critic_learning_rate_end'])
+        )
+        self.actor_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            self.actor_optimizer,
+            T_max=self.max_epochs,
+            eta_min=float(self.config['actor_learning_rate_end'])
+        )
+
         self.algo_observer = config['features']['observer']
 
         obs_dim = self.env_info["observation_space"].shape[0]
@@ -991,14 +1032,24 @@ class MTFastTD3Agent(FastTD3Agent):
 
         self.algo_observer.before_init(base_name, self.config, self.experiment_name)
 
-        wandb.init(
-            project="IsaacGym",
-            name=config['name'] + datetime.now().strftime("_%d-%H-%M-%S"),
-            save_code=True
-        )
+        # if self.normalize_input:
+        #     self.obs_normalizer = EmpiricalNormalization(obs_shape[0], device=self.ppo_device).to(self.ppo_device)
+        # else:
+        #     self.obs_normalizer = torch.nn.Identity()
+
+        if self.normalize_reward:
+            self.reward_normalizer = PerTaskRewardNormalizer(torch.unique(self.all_task_indices).shape[0], self.gamma, device=self.ppo_device).to(self.ppo_device)
+
+        # wandb.init(
+        #     project="IsaacGym",
+        #     name=config['name'] + datetime.now().strftime("_%d-%H-%M-%S"),
+        #     save_code=True
+        # )
     
     def preproc_obs(self, obs):
         if isinstance(obs, dict):
             obs = obs['obs']
-        obs = self.model.norm_obs(obs, self.all_task_indices)
+        task_ids_one_hot = obs[...,-self.num_tasks:]
+        task_indices = torch.argmax(task_ids_one_hot, dim=1)
+        obs = self.model.norm_obs(obs, task_indices)
         return obs

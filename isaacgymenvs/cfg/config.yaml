@@ -97,3 +97,7 @@ batch_size: 256
 minibatch_size: 32678
 
 units: [256, 128, 64] # units in the actor critic network
+critic_hidden_dim: 256
+
+learn_task_embedding: False
+horizon: 32

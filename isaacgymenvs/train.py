@@ -110,6 +110,9 @@ def launch_rlg_hydra(cfg: DictConfig):
     from isaacgymenvs.learning.networks import paco_a2c_builder
     from isaacgymenvs.learning.networks import grpo_builder
     from isaacgymenvs.learning.networks import td3_builder
+    from isaacgymenvs.learning.networks import td3_simba_v2_builder
+    from isaacgymenvs.learning.networks import simba_v2_a2c_builder
+    from isaacgymenvs.learning.networks import bro_a2c_builder
     
     import isaacgymenvs
 
@@ -239,6 +242,9 @@ def launch_rlg_hydra(cfg: DictConfig):
         model_builder.register_model('mt_parallel_q', lambda network, **kwargs : mt_models.MTModelParallelQ(network))
         
         model_builder.register_network('fast_td3_a2c', lambda **kwargs : td3_builder.FastTD3Builder(**kwargs))
+        model_builder.register_network('fast_td3_simbav2', lambda **kwargs : td3_simba_v2_builder.FastTD3SimbaV2Builder(**kwargs))
+        model_builder.register_network('simba_v2_a2c', lambda **kwargs : simba_v2_a2c_builder.SimbaV2A2CBuilder(**kwargs))
+        model_builder.register_network('bro_a2c', lambda **kwargs : bro_a2c_builder.BROA2CBuilder(**kwargs))
         model_builder.register_network('grpo', lambda **kwargs : grpo_builder.GRPOBuilder())
         model_builder.register_network('soft_modularization_sac', lambda **kwargs : soft_modularization_sac_builder.SoftModularizedSACBuilder())
         model_builder.register_network('soft_modularization_ppo', lambda **kwargs : soft_modularization_a2c_builder.SoftModularizedA2CBuilder())
