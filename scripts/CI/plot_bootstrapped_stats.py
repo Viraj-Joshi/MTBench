@@ -551,19 +551,19 @@ def get_patterns_for_setting(setting_str):
     if setting_str == "mt10":
         patterns['PATTERN_SHPPO_VANILLA'] = rf"05_09_ppo_vanilla_{setting_str}_rand_envs_(\d+)_seed_(\d+).*"
         patterns['PATTERN_MHPPO_VANILLA'] = rf"mhppo_vanilla_{setting_str}_rand_envs_(\d+)_seed_(\d+).*"
-        patterns['PATTERN_FAMO'] = rf"05_09_ppo_famo_{setting_str}_rand_envs_(\d+)_seed_(\d+).*"
-        patterns['PATTERN_PCGRAD'] = rf"05_11_ppo_pcgrad_{setting_str}_rand_envs_(\d+)_seed_(\d+).*"
+        patterns['PATTERN_FAMO'] = rf"ppo_famo_{setting_str}_rand_envs_(\d+)_seed_(\d+).*"
+        patterns['PATTERN_PCGRAD'] = rf"ppo_pcgrad_{setting_str}_rand_envs_(\d+)_seed_(\d+).*"
         patterns['PATTERN_CAGRAD'] = rf"ppo_cagrad_{setting_str}_rand_envs_(\d+)_seed_(\d+).*"
         patterns['PATTERN_SHPPO_PACO'] = rf"shppo_paco_{setting_str}_rand_envs_(\d+)_seed_(\d+).*"
         patterns['PATTERN_MHPPO_MOORE'] = rf"mhppo_moore_{setting_str}_rand_envs_(\d+)_seed_(\d+).*"
         patterns['PATTERN_SHPPO_MOORE'] = rf"shppo_moore_{setting_str}_rand_envs_(\d+)_seed_(\d+).*"
         patterns['PATTERN_SOFT_MODULARIZATION'] = rf"ppo_soft_modularization_{setting_str}_rand_envs_(\d+)_seed_(\d+).*"
-        patterns['PATTERN_MHPPO_CARE'] = rf"05_11_mhppo_care_{setting_str}_rand_envs_(\d+)_seed_(\d+).*"
+        patterns['PATTERN_MHPPO_CARE'] = rf"mhppo_care_{setting_str}_rand_envs_(\d+)_seed_(\d+).*"
         patterns['PATTERN_SHPPO_CARE'] = rf"shppo_care_{setting_str}_rand_envs_(\d+)_seed_(\d+).*"
-        patterns['PATTERN_GRPO'] = rf"05_26_grpo_vanilla_{setting_str}_rand_(\d+)_seed_(\d+).*"
+        patterns['PATTERN_GRPO'] = rf"grpo_vanilla_{setting_str}_rand_(\d+)_seed_(\d+).*"
     else: # Default MT50 patterns
-        patterns['PATTERN_SHPPO_VANILLA'] = rf"^ppo_vanilla_{setting_str}_rand_envs_(\d+)_seed_(\d+).*"
-        patterns['PATTERN_MHPPO_VANILLA'] = rf"05_07_mhppo_vanilla_{setting_str}_rand_envs_(\d+)_seed_(\d+).*"
+        patterns['PATTERN_SHPPO_VANILLA'] = rf"05_31_ppo_vanilla_{setting_str}_rand_envs_(\d+)_seed_(\d+).*"
+        patterns['PATTERN_MHPPO_VANILLA'] = rf"mhppo_vanilla_{setting_str}_rand_envs_(\d+)_seed_(\d+).*"
         patterns['PATTERN_FAMO'] = rf"ppo_famo_{setting_str}_rand_envs_(\d+)_seed_(\d+).*"
         patterns['PATTERN_PCGRAD'] = rf"ppo_pcgrad_{setting_str}_rand_envs_(\d+)_seed_(\d+).*"
         patterns['PATTERN_CAGRAD'] = rf"ppo_cagrad_{setting_str}_rand_envs_(\d+)_seed_(\d+).*"
@@ -573,16 +573,18 @@ def get_patterns_for_setting(setting_str):
         patterns['PATTERN_MHPPO_CARE'] = rf"mhppo_care_{setting_str}_rand_envs_(\d+)_seed_(\d+).*"
         patterns['PATTERN_SHPPO_CARE'] = rf"shppo_care_{setting_str}_rand_envs_(\d+)_seed_(\d+).*"
         patterns['PATTERN_SOFT_MODULARIZATION'] = rf"ppo_soft_modularization_{setting_str}_rand_envs_(\d+)_seed_(\d+).*"
-        patterns['PATTERN_GRPO'] = rf"05_26_grpo_vanilla_{setting_str}_rand_envs_(\d+)_seed_(\d+).*"
+        patterns['PATTERN_GRPO'] = rf"grpo_vanilla_{setting_str}_rand_envs_(\d+)_seed_(\d+).*"
     return patterns
 
 def get_setup_info_for_setting(setting_str, current_patterns):
     required_envs_val = 24576
     if setting_str == "mt10":
         pc_grad_required_envs = 24576
+        cagrad_required_envs = 24576
         grpo_required_envs = 4096
     else: # mt50
         pc_grad_required_envs = 8192
+        cagrad_required_envs = 6144
         grpo_required_envs = 24576
 
     return {
@@ -590,7 +592,7 @@ def get_setup_info_for_setting(setting_str, current_patterns):
         'mhppo_vanilla': {'pattern': current_patterns['PATTERN_MHPPO_VANILLA'], 'color': '#2ca02c', 'name': 'MH-Vanilla', 'required_envs': required_envs_val},
         'grpo_vanilla': {'pattern': current_patterns['PATTERN_GRPO'], 'color': "#3309f0", 'name': 'GRPO-Vanilla', 'required_envs': grpo_required_envs},
         'pcgrad': {'pattern': current_patterns['PATTERN_PCGRAD'], 'color': '#ff7f0e', 'name': 'PCGrad', 'required_envs': pc_grad_required_envs},
-        'cagrad': {'pattern': current_patterns['PATTERN_CAGRAD'], 'color': '#1f77b4', 'name': 'CAGrad', 'required_envs': required_envs_val},
+        'cagrad': {'pattern': current_patterns['PATTERN_CAGRAD'], 'color': '#1f77b4', 'name': 'CAGrad', 'required_envs': cagrad_required_envs},
         'famo': {'pattern': current_patterns['PATTERN_FAMO'], 'color': '#3690ff', 'name': 'FAMO', 'required_envs': required_envs_val},
         'soft_modularization': {'pattern': current_patterns['PATTERN_SOFT_MODULARIZATION'], 'color': '#FF4081', 'name': 'Soft-Modularization', 'required_envs': required_envs_val},
         'shppo_care': {'pattern': current_patterns['PATTERN_SHPPO_CARE'], 'color': '#FF5722', 'name': 'SH-CARE', 'required_envs': required_envs_val},
@@ -885,8 +887,8 @@ def generate_individual_rliable_plots(master_summary, run_counts, s_info, settin
                 pass # Removed axhline calls for dotted lines
             
             # --- Updated save paths for individual plots ---
-            save_path_png = f"scripts/figures/CI/plot_{metric_type}_CI_{setting_name}.png"
-            save_path_pdf = f"scripts/figures/CI/plot_{metric_type}_CI_{setting_name}.pdf"
+            save_path_png = f"figures/CI/plot_{metric_type}_CI_{setting_name}.png"
+            save_path_pdf = f"figures/CI/plot_{metric_type}_CI_{setting_name}.pdf"
             # --- End of updated save paths ---
 
             os.makedirs(os.path.dirname(save_path_png), exist_ok=True)
@@ -1086,8 +1088,8 @@ def generate_combined_rliable_plots(all_rliable_data, all_s_info, cmd_args): # R
 
         fig.tight_layout(rect=[0.02, 0, 0.97, 0.95], w_pad=3.0, h_pad=1.5) 
 
-        save_path_png = f"scripts/figures/CI/plot_CI_{metric_type}.png"
-        save_path_pdf = f"scripts/figures/CI/plot_CI_{metric_type}.pdf"
+        save_path_png = f"figures/CI/plot_CI_{metric_type}.png"
+        save_path_pdf = f"figures/CI/plot_CI_{metric_type}.pdf"
         os.makedirs(os.path.dirname(save_path_png), exist_ok=True)
         fig.savefig(save_path_png, dpi=300)
         print(f"Custom combined rliable plot for {metric_type} saved to {save_path_png}")
@@ -1102,7 +1104,7 @@ LOG_DIR = ""
 CURRENT_SETTING_NAME = ""
 
 if __name__ == "__main__":
-    LOG_DIR_DEFAULT = "/work/08962/vjoshi12/ls6/IsaacGymEnvs/runs/"
+    LOG_DIR_DEFAULT = "/work/08962/vjoshi12/ls6/MTBench/runs/"
     if not os.path.exists(LOG_DIR_DEFAULT):
         LOG_DIR_DEFAULT = "./runs_default/"
         print(f"Warning: Default log directory '{LOG_DIR_DEFAULT}' from script not found, trying local '{LOG_DIR_DEFAULT}'")

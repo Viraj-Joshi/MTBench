@@ -24,32 +24,42 @@ class ReplayBuffer:
             self.obs_dim = (self.obs_dim,)
         self.action_dim = action_dim
         self.device = device
-        self.next_p = 0  # next pointer
+        self.next_p = 0
         self.if_full = False
-        self.cur_capacity = 0  # current capacity
+        self.cur_capacity = 0
         self.capacity = int(capacity)
 
         ret = create_buffer(capacity=self.capacity, obs_dim=obs_dim, action_dim=action_dim, device=device)
         self.buf_obs, self.buf_action, self.buf_next_obs, self.buf_reward, self.buf_done = ret
+        
+        # Create a buffer to store effective_n_steps
+        self.buf_effective_n_steps = torch.empty((self.capacity, 1), dtype=torch.float32, device=device)
 
     @torch.no_grad()
     def add_to_buffer(self, trajectory):
-        obs, actions, rewards, next_obs, dones = trajectory
+        # Unpack the new value
+        obs, actions, rewards, next_obs, dones, effective_n_steps = trajectory
+        
         obs = obs.reshape(-1, *self.obs_dim)
         actions = actions.reshape(-1, self.action_dim)
         rewards = rewards.reshape(-1, 1)
         next_obs = next_obs.reshape(-1, *self.obs_dim)
         dones = dones.reshape(-1, 1).bool()
+        # Reshape the new value
+        effective_n_steps = effective_n_steps.reshape(-1, 1)
+
         p = self.next_p + rewards.shape[0]
 
         if p > self.capacity:
             self.if_full = True
-
+            
             self.buf_obs[self.next_p:self.capacity] = obs[:self.capacity - self.next_p]
             self.buf_action[self.next_p:self.capacity] = actions[:self.capacity - self.next_p]
             self.buf_reward[self.next_p:self.capacity] = rewards[:self.capacity - self.next_p]
             self.buf_next_obs[self.next_p:self.capacity] = next_obs[:self.capacity - self.next_p]
             self.buf_done[self.next_p:self.capacity] = dones[:self.capacity - self.next_p]
+            # Store the new value
+            self.buf_effective_n_steps[self.next_p:self.capacity] = effective_n_steps[:self.capacity - self.next_p]
 
             p = p - self.capacity
             self.buf_obs[0:p] = obs[-p:]
@@ -57,14 +67,18 @@ class ReplayBuffer:
             self.buf_reward[0:p] = rewards[-p:]
             self.buf_next_obs[0:p] = next_obs[-p:]
             self.buf_done[0:p] = dones[-p:]
+            # Store the new value
+            self.buf_effective_n_steps[0:p] = effective_n_steps[-p:]
         else:
             self.buf_obs[self.next_p:p] = obs
             self.buf_action[self.next_p:p] = actions
             self.buf_reward[self.next_p:p] = rewards
             self.buf_next_obs[self.next_p:p] = next_obs
             self.buf_done[self.next_p:p] = dones
+            # Store the new value
+            self.buf_effective_n_steps[self.next_p:p] = effective_n_steps
 
-        self.next_p = p  # update pointer
+        self.next_p = p
         self.cur_capacity = self.capacity if self.if_full else self.next_p
 
     @torch.no_grad()
@@ -75,5 +89,7 @@ class ReplayBuffer:
             self.buf_action[indices].to(device),
             self.buf_reward[indices].to(device),
             self.buf_next_obs[indices].to(device),
-            self.buf_done[indices].to(device).float()
+            self.buf_done[indices].to(device).float(),
+            # Sample and return the new value
+            self.buf_effective_n_steps[indices].to(device)
         )

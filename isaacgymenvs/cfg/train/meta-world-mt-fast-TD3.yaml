@@ -1,0 +1,70 @@
+params:
+  seed: ${...seed}
+  algo:
+    name: mt_fast_td3
+
+  model:
+    name: mt_fast_td3
+
+  network:
+    name: fast_td3_a2c
+    space:
+      continuous:
+    actor:
+      hidden_feature: 512
+      init_scale: .5
+      std_min: .001
+      std_max: .4
+    critic:
+      hidden_feature: 1024
+      v_min: -10.0
+      v_max: 10.0
+      num_atoms: 101
+
+  load_checkpoint: ${if:${...checkpoint},True,False} # flag which sets whether to load the checkpoint
+  load_path: ${...checkpoint} # path to the checkpoint to load
+
+  config:
+    name: ${resolve_default:mt_td3,${....experiment}} 
+    full_experiment_name: ${.name}
+    env_name: rlgpu
+    multi_gpu: ${....multi_gpu}
+    amp: True # mixed precision training
+    amp_dtype: bf16
+    num_actors: ${....task.env.numEnvs}
+    reward_shaper:
+      scale_value: 1.0
+    gamma: 0.99
+    gradient_steps_per_itr: ${....gradient_steps_per_itr} # Number of optimization steps where new batch is sampled and critic + actor are updated
+    use_cdq: True
+
+    learn_task_embedding: True
+    task_embedding_dim: 32
+
+    normalize_input: True
+    normalize_reward: True
+
+    actor_lr: 3e-4
+    critic_lr: 3e-4
+    critic_learning_rate_end: 3e-4
+    actor_learning_rate_end: 3e-4
+    weight_decay: 0.1
+    critic_tau: 0.1
+    batch_size: 32768
+    nstep: ${....nstep}         # the number of steps to use for the multi-step return
+    actor_update_freq: 2
+    noise_clip: 0.5  # noise clip parameter of the Target Policy Smoothing Regularization
+    policy_noise: 0.001
+
+    max_epochs: ${resolve_default:20000,${....max_iterations}}
+    horizon: 1        # samples new batch and performs a gradient step times gradient_steps_per_itr*horizon times per epoch
+    save_best_after: 200
+    save_frequency: 60000
+    print_stats: True
+    use_grad_norm: False
+    grad_norm: .5
+    num_warmup_steps: ${....nstep} # horizon length to do random actions before starting to learn 
+    replay_buffer_size: 8_388_608 # 2048 * 4096
+
+    use_replay_ratio_scaling: False
+    evaluation_interval: 1000

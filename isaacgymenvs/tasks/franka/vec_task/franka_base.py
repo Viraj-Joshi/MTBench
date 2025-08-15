@@ -155,10 +155,7 @@ class FrankaBaseEnvV2(VecTask):
 
         num_obs = 39
         if self.cfg["env"]["taskEmbedding"]:
-            if self.cfg["env"]["taskEmbeddingType"] == "one_hot":
-                num_obs += len(set(self.cfg["env"]["tasks"]))
-            else:
-                raise ValueError("taskEmbeddingType should be one_hot")
+            num_obs += len(set(self.cfg["env"]["tasks"]))
             
         if self.ml_one_enabled:
             self.num_envs_per_task = self.cfg["env"]["numEnvs"]//self.meta_batch_size
@@ -536,7 +533,6 @@ class FrankaBaseEnvV2(VecTask):
         franka_rigid_body_idx = torch.stack([self.franka_rigid_body_start_idx + i for i in range(self.num_franka_rigid_bodies)], dim=1).flatten()
         self.franka_rigid_body_states = self.rigid_body_states[franka_rigid_body_idx, :].view(self.num_envs, -1, 13) # creates a copy!
                 
-        # self.num_dofs = self.gym.get_sim_dof_count(self.sim) // self.num_envs
         self.dof_targets_all = torch.zeros((self.gym.get_sim_dof_count(self.sim), 1), device=self.device).to(dtype=torch.float)
         self.franka_dof_targets = self.dof_targets_all[self.franka_dof_idx].view(self.num_envs, -1) # creates a copy!
 
@@ -551,18 +547,15 @@ class FrankaBaseEnvV2(VecTask):
         self.task_indices = torch.tensor(self.task_indices, device=self.device)
 
         if self.cfg["env"]["taskEmbedding"]:
-            if self.cfg["env"]["taskEmbeddingType"] == "one_hot":
-                # Transform task indices to get continuous indices
-                transformed_indices = transform_task_indices(self.task_indices)
-                
-                # Get the number of unique tasks
-                num_unique_tasks = len(torch.unique(transformed_indices))
-                
-                # Use the transformed indices for one-hot encoding with correct dimension
-                self.task_embedding = torch.nn.functional.one_hot(
-                    transformed_indices, 
-                    num_unique_tasks
-                ).float()
+            # Transform task indices to get continuous indices
+            transformed_indices = transform_task_indices(self.task_indices)
+            num_unique_tasks = len(torch.unique(transformed_indices))
+            
+            # Use the transformed indices for one-hot encoding
+            self.task_embedding = torch.nn.functional.one_hot(
+                transformed_indices, 
+                num_unique_tasks
+            ).float()
         self.success_buf = torch.zeros(
             self.num_envs, device=self.device, dtype=torch.bool)
         self.extras["episode_cumulative"] = {}
