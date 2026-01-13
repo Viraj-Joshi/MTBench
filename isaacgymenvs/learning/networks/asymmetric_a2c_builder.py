@@ -114,23 +114,13 @@ class AsymmetricA2CBuilder(A2CBuilder):
             self.value = self._build_value_layer(critic_out_size, self.value_size)
             self.value_act = self.activations_factory.create(self.value_activation)
 
-            if self.is_discrete:
-                self.logits = torch.nn.Linear(actor_out_size, self.actions_num)
-            if self.is_multi_discrete:
-                self.logits = torch.nn.ModuleList([torch.nn.Linear(actor_out_size, num) for num in self.actions_num])
-            if self.is_continuous:
-                self.mu = torch.nn.Linear(actor_out_size, self.actions_num)
-                self.mu_act = self.activations_factory.create(self.space_config['mu_activation']) 
-                mu_init = self.init_factory.create(**self.space_config['mu_init'])
-                self.sigma_act = self.activations_factory.create(self.space_config['sigma_activation']) 
-                sigma_init = self.init_factory.create(**self.space_config['sigma_init'])
+            self._build_action_heads(actor_out_size)
+            self._init_weights()
+            
+        def _init_weights(self):
+            mu_init = self.init_factory.create(**self.space_config['mu_init'])
+            sigma_init = self.init_factory.create(**self.space_config['sigma_init'])
 
-                if self.fixed_sigma:
-                    self.sigma = nn.Parameter(torch.zeros(self.actions_num, requires_grad=True, dtype=torch.float32), requires_grad=True)
-                else:
-                    self.sigma = torch.nn.Linear(actor_out_size, self.actions_num)
-
-            # Initialization
             actor_init = self.init_factory.create(**self.actor_initializer)
             critic_init = self.init_factory.create(**self.critic_initializer)
             
@@ -172,7 +162,22 @@ class AsymmetricA2CBuilder(A2CBuilder):
                     sigma_init(self.sigma.weight)
                     if getattr(self.sigma, "bias", None) is not None:
                         torch.nn.init.zeros_(self.sigma.bias)
+        
+        def _build_action_heads(self, input_dim):
+            if self.is_discrete:
+                self.logits = torch.nn.Linear(input_dim, self.actions_num)
+            if self.is_multi_discrete:
+                self.logits = torch.nn.ModuleList([torch.nn.Linear(input_dim, num) for num in self.actions_num])
+            if self.is_continuous:
+                self.mu = torch.nn.Linear(input_dim, self.actions_num)
+                self.mu_act = self.activations_factory.create(self.space_config['mu_activation']) 
+                self.sigma_act = self.activations_factory.create(self.space_config['sigma_activation']) 
 
+                if self.fixed_sigma:
+                    self.sigma = nn.Parameter(torch.zeros(self.actions_num, requires_grad=True, dtype=torch.float32), requires_grad=True)
+                else:
+                    self.sigma = torch.nn.Linear(input_dim, self.actions_num)
+    
         def _build_actor(self, actor_args, task_embedding_args):
             actor_mlp = self._build_mlp(**actor_args)
 
@@ -193,7 +198,6 @@ class AsymmetricA2CBuilder(A2CBuilder):
             # Critic Path
             if self.separate:
                 critic_obs = obs.clone()
-
                 c_out = self.critic_mlp(obs)
             else:
                 c_out = a_out
@@ -225,47 +229,47 @@ class AsymmetricA2CBuilder(A2CBuilder):
     def build(self, name, **kwargs):
         net = self.Network(self.params, **kwargs)
         return net
+    
+class TaskEmbedder(nn.Module):
+    def __init__(self, task_embedding_args):
+        super().__init__()
+        self.learn_embedding = task_embedding_args['learn_task_embedding']
+        self.num_tasks = task_embedding_args['num_tasks']
+        
+        if self.learn_embedding:
+            self.embedding = nn.Embedding(
+                self.num_tasks, 
+                task_embedding_args['task_embedding_dim']
+            )
+        else:
+            self.embedding = None
+
+    def forward(self, obs: torch.Tensor) -> torch.Tensor:
+        if self.embedding is not None:
+            task_ids_one_hot = obs[..., -self.num_tasks:]
+            task_indices = torch.argmax(task_ids_one_hot, dim=1)
+            task_embeds = self.embedding(task_indices)
+            return torch.cat([obs[..., :-self.num_tasks], task_embeds], dim=-1)
+        
+        # If not learning embeddings, return obs exactly as is
+        return obs
 
 class Actor(nn.Module):
     def __init__(self, actor_mlp, task_embedding_args):
         super().__init__()
+        self.embedder = TaskEmbedder(task_embedding_args)
         self.actor_mlp = actor_mlp
 
-        learn_task_embedding = task_embedding_args['learn_task_embedding']
-        task_embedding_dim = task_embedding_args['task_embedding_dim']
-        self.num_tasks = task_embedding_args['num_tasks']
-
-        self.task_embedding = None
-        if learn_task_embedding:
-            self.task_embedding = nn.Embedding(self.num_tasks, task_embedding_dim)
-
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
-        if self.task_embedding is not None:
-            task_ids_one_hot = obs[..., -self.num_tasks :]
-            task_indices = torch.argmax(task_ids_one_hot, dim=1)
-            task_embeddings = self.task_embedding(task_indices)
-            obs = torch.cat([obs[..., : -self.num_tasks], task_embeddings], dim=-1)
-        x = self.actor_mlp(obs)
-        return x
-    
+        x = self.embedder(obs)
+        return self.actor_mlp(x)
+
 class Critic(nn.Module):
     def __init__(self, critic_mlp, task_embedding_args):
         super().__init__()
+        self.embedder = TaskEmbedder(task_embedding_args)
         self.critic_mlp = critic_mlp
 
-        learn_task_embedding = task_embedding_args['learn_task_embedding']
-        task_embedding_dim = task_embedding_args['task_embedding_dim']
-        self.num_tasks = task_embedding_args['num_tasks']
-
-        self.task_embedding = None
-        if learn_task_embedding:
-            self.task_embedding = nn.Embedding(self.num_tasks, task_embedding_dim)
-
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
-        if self.task_embedding is not None:
-            task_ids_one_hot = obs[..., -self.num_tasks :]
-            task_indices = torch.argmax(task_ids_one_hot, dim=1)
-            task_embeddings = self.task_embedding(task_indices)
-            obs = torch.cat([obs[..., : -self.num_tasks], task_embeddings], dim=-1)
-        x = self.critic_mlp(obs)
-        return x
+        x = self.embedder(obs)
+        return self.critic_mlp(x)
