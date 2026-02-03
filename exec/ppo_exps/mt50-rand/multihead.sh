@@ -1,10 +1,11 @@
 #!/bin/bash
 
 task_counts=[492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491]
+horizon=64
 for e in 24576
 do
-	t=$((1000000000 / (e * 32)+1))
-	for i in 42 43 44
+	t=$((1000000000 / (${e} * ${horizon})+1))
+	for i in 42
 	do
 		cmd="python isaacgymenvs/train.py \
 			task_id=[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49] \
@@ -15,15 +16,17 @@ do
 			reward_scale=100 \
 			termination_on_success=False \
 			experiment=mhppo_mt50_rand_envs_${e}_seed_${i} \
-			train=meta-world-mt50-vanilla-MHPPO \
+			train=meta-world-mt50-vanilla-asymmetric-MHPPO \
 			seed=$i \
-			wandb_activate=True \
+			wandb_activate=False \
 			wandb_project=IsaacGym \
 			sim_device=cuda:0 \
 			rl_device=cuda:0 \
 			headless=True \
 			record_videos=False \
-			max_iterations=$t"
+			max_iterations=${t} \
+			horizon=${horizon} \
+			learn_task_embedding=False"
 		echo $cmd
 		$cmd
 	done

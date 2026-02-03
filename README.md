@@ -71,7 +71,7 @@ To add a new task to Meta-World, add it to the task id to task map in `isaacgyme
 | Approach | Reference | Location |
 |-------------|-------------|-------------|
 | Vanilla  | -      | [MTA2CAgent](isaacgymenvs/learning/mt_a2c_agent.py#L58)
-| Multihead Vanilla  | -      | [MultiHeadA2CBuilder](isaacgymenvs/learning/networks/multihead_a2c_builder.py#L8)
+| Asymmetric (Multi Head) Critic  | -      | [AsymmetricA2CBuilder](isaacgymenvs/learning/networks/asymmetric_a2c_builder.py#L8)
 | PCGrad  | https://arxiv.org/abs/2001.06782 | [PCGradA2CAgent](isaacgymenvs/learning/mt_a2c_agent.py#L542)
 | CAGrad  | https://arxiv.org/abs/2110.14048       | [CAGradA2CAgent](isaacgymenvs/learning/mt_a2c_agent.py#L573)
 | FAMO    | https://arxiv.org/abs/2306.03792       | [FAMOA2CAgent](isaacgymenvs/learning/mt_a2c_agent.py#L632)

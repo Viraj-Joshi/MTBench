@@ -4,7 +4,7 @@ for e in 24576
 do
 	task_counts=[2458,2458,2458,2458,2458,2458,2457,2457,2457,2457]
 	t=$(( (1000000000 + (e * 32) - 1) / (e * 32) ))
-	for i in 48 49 50 51
+	for i in 42 43 44
 	do
 		cmd="python isaacgymenvs/train.py \
 			task_id=[4,16,17,18,28,31,38,40,48,49] \
@@ -14,8 +14,8 @@ do
 			fixed=False \
 			reward_scale=100 \
 			termination_on_success=False \
-			experiment=05_21_mhppo_vanilla_mt10_rand_envs_${e}_seed_${i} \
-			train=meta-world-mt10-vanilla-MHPPO \
+			experiment=mhppo_vanilla_mt10_rand_envs_${e}_seed_${i} \
+			train=meta-world-mt10-vanilla-asymmetric-MHPPO \
 			seed=$i \
 			wandb_activate=True \
 			wandb_project=IsaacGym \

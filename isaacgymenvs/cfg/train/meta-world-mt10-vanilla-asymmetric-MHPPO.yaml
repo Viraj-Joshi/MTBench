@@ -9,6 +9,7 @@ params:
   network:
     name: asymmetric_a2c
     separate: True
+    multi_head: True
 
     space:
       continuous:
@@ -49,17 +50,19 @@ params:
     multi_gpu: ${....multi_gpu}
     ppo: True
     mixed_precision: True
-    normalize_input: True
-    normalize_value: True
     value_bootstrap: True
 
     learn_task_embedding: ${....learn_task_embedding} 
     task_embedding_dim: 32
 
+    normalize_input: True
+    normalize_value: True
+    normalize_reward: False
+    normalize_advantage: True
+
     num_actors: ${....task.env.numEnvs}
     reward_shaper:
       scale_value: 1.0
-    normalize_advantage: True
     gamma: 0.99
     tau: 0.95
     learning_rate: 5e-4
@@ -75,8 +78,8 @@ params:
     entropy_coef: 0.005
     truncate_grads: True
     e_clip: 0.2
-    horizon_length: ${....horizon}
-    minibatch_size: ${....minibatch_size} # only mt10 experiment with this batch size (16384 had identical results)
+    horizon_length: 32
+    minibatch_size: 32768 # only mt10 experiment with this batch size (16384 had identical results)
     mini_epochs: 5
     critic_coef: 4
     clip_value: True

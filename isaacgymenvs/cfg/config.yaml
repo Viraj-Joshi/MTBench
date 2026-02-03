@@ -101,3 +101,6 @@ critic_hidden_dim: 256
 
 learn_task_embedding: False
 horizon: 32
+
+critic_width: 256
+critic_blocks: 1

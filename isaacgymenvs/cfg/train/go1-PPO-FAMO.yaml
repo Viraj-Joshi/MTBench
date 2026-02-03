@@ -7,7 +7,7 @@ params:
     name: mt_continuous_a2c_logstd
 
   network:
-    name: multihead_a2c
+    name: asymmetric_a2c
     separate: True
     multi_head: False
 

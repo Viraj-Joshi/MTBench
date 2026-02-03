@@ -105,8 +105,8 @@ def launch_rlg_hydra(cfg: DictConfig):
     from isaacgymenvs.learning.networks import moore_sac_builder
     from isaacgymenvs.learning.networks import moore_a2c_builder
     from isaacgymenvs.learning.networks import care_a2c_builder
-    from isaacgymenvs.learning.networks import multihead_a2c_builder
     from isaacgymenvs.learning.networks import asymmetric_a2c_builder
+    from isaacgymenvs.learning.networks import asymmetric_depth_a2c_builder
     from isaacgymenvs.learning.networks import paco_a2c_builder
     from isaacgymenvs.learning.networks import grpo_builder
     from isaacgymenvs.learning.networks import td3_builder
@@ -253,15 +253,15 @@ def launch_rlg_hydra(cfg: DictConfig):
         model_builder.register_network('care_a2c', lambda **kwargs : care_a2c_builder.CAREA2CBuilder())
         model_builder.register_network('pqn', lambda **kwargs : pq_builder.PQNBuilder())
         model_builder.register_network('soft_modularization_pq', lambda **kwargs : soft_modularized_pq_builder.SoftModularizedPQBuilder())
-        model_builder.register_network('multihead_a2c', lambda **kwargs : multihead_a2c_builder.MultiHeadA2CBuilder(**kwargs))
         model_builder.register_network('asymmetric_a2c', lambda **kwargs : asymmetric_a2c_builder.AsymmetricA2CBuilder(**kwargs))
+        model_builder.register_network('asymmetric_depth_a2c', lambda **kwargs : asymmetric_depth_a2c_builder.AsymmetricDepthA2CBuilder(**kwargs))
+
         model_builder.register_network('paco_a2c', lambda **kwargs : paco_a2c_builder.PACOA2CBuilder(**kwargs))
 
         runner.player_factory.register_builder('mt_a2c_continuous', lambda **kwargs : mt_player.MTPlayer(**kwargs))
         runner.player_factory.register_builder('mt_a2c_paco', lambda **kwargs : mt_player.MTPlayer(**kwargs))
         runner.player_factory.register_builder('moore_ppo', lambda **kwargs : mt_player.MTPlayer(**kwargs))
         runner.player_factory.register_builder('soft_modularization_ppo', lambda **kwargs : mt_player.MTPlayer(**kwargs))
-        runner.player_factory.register_builder('multihead_a2c', lambda **kwargs : mt_player.MTPlayer(**kwargs))
         runner.player_factory.register_builder('mt_grpo_continuous', lambda **kwargs : mt_player.MTPlayer(**kwargs))
 
         return runner
