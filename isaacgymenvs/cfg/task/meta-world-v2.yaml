@@ -7,7 +7,7 @@ physics_engine: ${..physics_engine}
 env:
   numEnvs: ${resolve_default:4096,${...num_envs}}
   envSpacing: 1.5
-  episodeLength: 150
+  episodeLength: 250
   enableDebugVis: ${...record_videos}
 
   clipObservations: 5.0
@@ -24,7 +24,7 @@ env:
   exemptedInitAtRandomProgressTasks: ${...exempted_tasks} # [1,2,30,31,32,37,38,39,42]
   taskEmbedding: True
   seed: ${...seed}
-  cameraRenderingInterval: 5000
+  cameraRenderingInterval: 100
   cameraWidth: 1024
   cameraHeight: 1024
   sparse_reward: ${...sparse_reward}
@@ -52,7 +52,7 @@ sim:
     bounce_threshold_velocity: 0.2
     max_depenetration_velocity: 1000.0
     default_buffer_size_multiplier: 10.0
-    max_gpu_contact_pairs: 1048576 # 1024*1024
+    max_gpu_contact_pairs: 2097152 # 1024*1024
     num_subscenes: ${....num_subscenes}
     contact_collection: 0 # 0: CC_NEVER (don't collect contact info), 1: CC_LAST_SUBSTEP (collect only contacts on last substep), 2: CC_ALL_SUBSTEPS (broken - do not use!)
 

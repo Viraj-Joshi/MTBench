@@ -35,25 +35,34 @@ class MTModelNetwork(nn.Module):
             else:
                 self.running_mean_stds = nn.ModuleList([RunningMeanStd(self.true_obs_dim) for _ in range(task_embedding_dim)])
         
-    def norm_obs(self, observation, task_indices):
+    def norm_obs(self, observation, task_indices, norm_task_indices=None):
         if observation.shape[0] != task_indices.shape[0]:
             raise ValueError(f"number of observations {observation.shape[0]} does not match number of task indices {task_indices.shape[0]}")
+        
+        task_indices = task_indices.squeeze(-1)
+        if norm_task_indices is None:
+            norm_task_indices = task_indices
+        norm_task_indices = norm_task_indices.view(-1)
+        
+        one_hot_tasks = torch.nn.functional.one_hot(task_indices, num_classes=self.task_embedding_dim).float() # (B, num_tasks)
+
         if self.normalize_input:
             true_obs = observation[:, :self.true_obs_dim]
-            task_indices = task_indices.squeeze(-1)
             with torch.no_grad():
                 current_mean = torch.zeros_like(true_obs)
                 current_var = torch.ones_like(true_obs)
-                for tid in torch.unique(task_indices):
-                    idx = (task_indices == tid).nonzero(as_tuple=False).squeeze(-1)
+                # normalize task observation by what task is actually running (norm task indices), not what task we want to condition on (task_indices)
+                for tid in torch.unique(norm_task_indices):
+                    idx = (norm_task_indices == tid).nonzero(as_tuple=False).view(-1)
                     if self.running_mean_stds.training:
                         self.running_mean_stds[tid.item()](true_obs[idx])
                     current_mean[idx] = self.running_mean_stds[tid.item()].running_mean.float()
                     current_var[idx] = self.running_mean_stds[tid.item()].running_var.float()
                 normalized_obs  = (true_obs - current_mean) / (current_var + 1e-8).sqrt()
-                return torch.cat([normalized_obs, observation[:, self.true_obs_dim:]], dim=1)
+                return torch.cat([normalized_obs, one_hot_tasks], dim=1)
         else:
-            return observation
+            true_obs = observation[:, :self.true_obs_dim]
+            return torch.cat([true_obs, one_hot_tasks], dim=1)
 
     def denorm_value(self, value, task_indices):
         with torch.no_grad():
@@ -315,7 +324,8 @@ class MTModelA2CContinuousLogStd(ModelA2CContinuousLogStd):
             prev_actions = input_dict.get('prev_actions', None)
             # added task_indices
             task_indices = input_dict.get('task_indices', None)
-            input_dict['obs'] = self.norm_obs(input_dict['obs'], task_indices)
+            norm_task_indices = input_dict.get('norm_task_indices', task_indices)
+            input_dict['obs'] = self.norm_obs(input_dict['obs'], task_indices, norm_task_indices)
             # ---------------------
             mu, logstd, value, states = self.a2c_network(input_dict)
             sigma = torch.exp(logstd)
@@ -347,9 +357,13 @@ class MTModelA2CContinuousLogStd(ModelA2CContinuousLogStd):
                 return result
             
         def neglogp(self, x, mean, std, logstd):
-            return 0.5 * (((x - mean) / std)**2).sum(dim=-1) \
+            z_score = (x - mean) / std
+
+            unclipped_neglogp = 0.5 * (z_score**2).sum(dim=-1) \
                 + 0.5 * np.log(2.0 * np.pi) * x.size()[-1] \
                 + logstd.sum(dim=-1)
+                
+            return unclipped_neglogp
 
 import copy
 class MTModelSACContinuous(ModelSACContinuous):

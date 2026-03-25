@@ -1,7 +1,6 @@
 videos
 /isaacgymenvs/logs
 *train_dir*
-*wandb*
 *ige_logs*
 *.egg-info
 /.vs
@@ -26,7 +25,7 @@ runs_save/
 .idea
 outputs/
 *.hydra*
-/isaacgymenvs/wandb
+wandb/
 
 debug/
 figures/

@@ -170,9 +170,14 @@ def compute_reward(
 
     hand = (franka_lfinger_pos + franka_rfinger_pos) / 2
     door = door_pos.clone()
-    door[:,0] += -.15      
-    door[:,1] += -.075 # below handle in y
-    # door[:,2] += 
+    # Offset into the gap between parallel handle bar and door panel:
+    # +X_world = +Y_local (toward door panel, into the gap)
+    # -Y_world = +X_local (along handle bar toward tip / parallel bar)
+    door[:,0] += 0.03
+    door[:,1] += -0.10
+
+    theta = door_dof_pos.squeeze()
+    door_angle = -theta
 
     threshold = 0.05
     # floor is a 3D funnel centered on the door handle
@@ -188,10 +193,12 @@ def compute_reward(
         margin=torch.ones_like(floor)*.1,
         sigmoid="long_tail"
     )
-    
+
     # when radius <= threshold, we have guided the hand to not hit the handle, so we give full credit for this part
     above_floor = torch.where(hand[:,2]>=floor, 1.0, above_floor)
-    
+    # Bypass floor constraint once door is already opening (floor only needed during approach)
+    above_floor = torch.where(door_angle > 0.1, 1.0, above_floor)
+
     # at this point, we avoided collision with the handle,
     # now, move the hand to a position between the handle and the main door body
     x = hand-door
@@ -206,30 +213,27 @@ def compute_reward(
     )
     ready_to_open = hamacher_product(above_floor, in_place)
 
-    theta = door_dof_pos.squeeze()
-    door_angle = -theta
+    # Binary bonus for any opening (discoverable jump) + proportional progress (continuous gradient)
+    opened = 0.3 * torch.where(theta < -math.pi / 90.0, 1.0, 0.0) + 0.7 * torch.clamp(door_angle / 1.5, 0.0, 1.0)
 
-    a = 0.2  # Relative importance of just *trying* to open the door at all
-    b = 0.8  # Relative importance of fully opening the door
-    opened = (a * torch.where(theta < -math.pi / 90.0,1.0,0.0)+ (b * tolerance(
-        math.pi / 2.0 + math.pi / 6 - door_angle,
-        bounds=(0.0, 0.5),
-        margin=torch.ones_like(floor) * math.pi / 3.0,
-        sigmoid="long_tail",
-    )))
-    opened = torch.where(door_angle > 1.5, 1.0, opened) # past 1.5ish the second term becomes 0
-
-    # create a normalized 0 to 1 measurement of how open the gripper is, where 1 is fully open
+    # Gripper state: 1 = fully open, 0 = closed
     gripper_distance_apart = torch.norm(franka_rfinger_pos-franka_lfinger_pos,dim=-1)
     tcp_opened = torch.clip(gripper_distance_apart/.095,0.0,1.0)
-    
-    # reward_grab_effort = (torch.clip(actions[:,-1], -1, 1) + 1.0) / 2.0
-    rewards = (2 * hamacher_product(ready_to_open, tcp_opened) + 8*opened) * .01
-    # rewards = ready_to_open * .01
+    tcp_closed = 1.0 - tcp_opened
+
+    # Phase 1: Reach the handle (no gripper requirement — funnel prevents collision)
+    reach_reward = ready_to_open
+
+    # Phase 2: Grasp — only rewarded when positioned at handle
+    grasp_reward = ready_to_open * tcp_closed
+
+    # Combine: reach gets hand there, grasp provides solid contact, opened pulls door
+    # Split opened into base (always) + contact bonus (only when in position)
+    rewards = (1 * reach_reward + 1.5 * grasp_reward + 4 * opened + 6 * opened * ready_to_open) * .01
 
     # Override reward on success flag
-    success = torch.abs(door_pos[:,1] - target_pos[:,1]) <= .08
-    rewards = torch.where(success, 10.0, rewards)
+    success = torch.abs(door_pos[:,1] - target_pos[:,1]) <= .15
+    rewards = torch.where(success, 20.0, rewards)
 
     # reset if success or max length reached
     reset_buf = torch.logical_or(success, progress_buf >= max_episode_length - 1).to(reset_buf.dtype)

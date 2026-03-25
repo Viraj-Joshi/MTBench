@@ -6,6 +6,10 @@ Multi-task Reinforcement Learning (MTRL) has emerged as a critical training para
 
 ## Updates
 
+* [March 25, 2026] 
+    * Update the reward function for Meta-World Door Open task to be solvable at 100% success with PPO. Changing this reward function has invalidated results from the paper, so if you use this, be sure to re-run your baselines!
+    * Removed wandb_utils.py from gitignore. 
+* [February 3rd, 2026] Simplify Asymmetric Critic implementation and use batched matrix multiplication for the task heads
 * [Aug 15th, 2025] Add FastTD3 + SimbaV2, BRO, Asymmetric Critic
 
 ## Installation ⚙️
@@ -14,17 +18,18 @@ Download the Isaac Gym Preview 4 release from the [website](https://developer.nv
 follow the installation instructions in the documentation. 
 
 Ensure that Isaac Gym works on your system by running one of the examples from the `python/examples`
-directory, like `joint_monkey.py`. Follow troubleshooting steps described in the Isaac Gym Preview 4
+directory, like `joint_monkey.py`. Follow the troubleshooting steps described in the Isaac Gym Preview 4
 install instructions if you have any trouble running the samples.
 
 Once Isaac Gym is installed and samples work within your current python environment, install this repo:
 
 ```bash
 pip install -e .
+pip install "wandb<0.16.0"
 pip install skrl
 pip install moviepy
 ```
-
+Don't skip downgrading wandb, otherwise the wandb plots will be nonsensical in the x-axis and warnings of resuming past runs.
 
 ## Basic Structure
 ```
@@ -114,7 +119,7 @@ All experimental results are reproducible from the bash executables in the ```ex
 
 ## Don't like RLGames?
 
-Instantiate the domain of your choice with the below Gym wrapper and use your own RL code. Code adapted from FastTD3
+Instantiate the domain of your choice with the below Gym wrapper and use your own learning algorithm. Code adapted from FastTD3
 
 ```python
 class MTBenchEnv:
@@ -138,10 +143,11 @@ class MTBenchEnv:
             task_config["env"]["tasks"] = [4, 16, 17, 18, 28, 31, 38, 40, 48, 49]
             task_config["env"]["taskEnvCount"] = get_task_counts(task_name)
         elif task_name == "meta-world-v2-mt50":
+            self.num_tasks = 50
             task_config["env"]["tasks"] = list(range(self.num_tasks))
             task_config["env"]["taskEnvCount"] = get_task_counts(task_name)
         else:
-            raise ValueError(f"Unsupported task name: {task_name}")
+            # add your own mix of tasks
 
         task_config["env"]["numEnvs"] = num_envs
         task_config["env"]["numObservations"] = 39 + self.num_tasks
@@ -224,7 +230,7 @@ Key arguments to the `train.py` script are:
 * `headless=HEADLESS` - Whether to run in headless mode.
 * `experiment=EXPERIMENT` - Sets the name of the experiment.
 * `max_iterations=MAX_ITERATIONS` - Sets how many iterations to run for.
-* `exempted_tasls=[]` - an optional list of task ids that does not randomize the start step count per env. We find that it improves performance, so we always randomize the starting step count per env.
+* `exempted_tasks=[]` - an optional list of task ids that does not randomize the start step count per env. We find that it improves performance, so we always randomize the starting step count per env.
 
 Hydra also allows setting variables inside config files directly as command line arguments. As an example, to set the discount rate for a rl_games training run, you can use `train.params.config.gamma=0.999`. Similarly, variables in task configs can also be set. For example, `task.env.enableDebugVis=True`.
 
@@ -242,7 +248,9 @@ In some places in the config you will find other variables referenced (for examp
 
 ## WandB support
 
-You can run [WandB](https://wandb.ai/) with Isaac Gym Envs by setting `wandb_activate=True` flag from the command line. You can set the group, name, entity, and project for the run by setting the `wandb_group`, `wandb_name`, `wandb_entity` and `wandb_project` set. Make sure you have WandB installed with `pip install wandb` before activating.
+The latest version of wandb will result in a bugged x axis. Do not use it!
+
+You can run [WandB](https://wandb.ai/) with Isaac Gym Envs by setting `wandb_activate=True` flag from the command line. You can set the group, name, entity, and project for the run by setting the `wandb_group`, `wandb_name`, `wandb_entity` and `wandb_project` set.
 
 ## Capture videos during training
 

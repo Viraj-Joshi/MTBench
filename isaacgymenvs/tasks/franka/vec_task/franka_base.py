@@ -1,5 +1,6 @@
 from collections import defaultdict
 from typing import Dict, Tuple
+import imageio
 import isaacgym
 import numpy as np
 import os
@@ -140,8 +141,16 @@ class FrankaBaseEnvV2(VecTask):
         self.reset_noise = self.cfg["env"].get("resetNoise", .1)
         self.aggregate_mode = self.cfg["env"]["aggregateMode"]
 
+        # camera related variables
         self.debug_viz = self.cfg["env"]["enableDebugVis"]
         self.camera_rendering_interval = self.cfg["env"]["cameraRenderingInterval"]
+
+        self.recorded_episodes_count = 0
+        self.max_recorded_episodes = 3  # Set this to however many you want to capture
+
+        self.camera_rendering = False
+        self.camera_request_visual = False
+        self.camera_frames = []
 
         self.ml_one_enabled = self.cfg["env"].get("metaLearningEnabled",None)
         self.meta_batch_size = self.cfg["env"].get("metaBatchSize",None)
@@ -375,6 +384,10 @@ class FrankaBaseEnvV2(VecTask):
             damping_factor=0.05
         )
 
+        # Sanitize IK outputs to prevent PhysX OOM/illegal memory access from NaNs/Infs
+        if torch.isnan(dof_deltas).any() or torch.isinf(dof_deltas).any():
+            dof_deltas = torch.nan_to_num(dof_deltas, nan=0.0, posinf=0.0, neginf=0.0)
+
         # Add velocity damping
         # velocity_damping = 0.1  # Tune this parameter
         # dof_delta_magnitude = torch.norm(dof_deltas, dim=1, keepdim=True)
@@ -426,30 +439,8 @@ class FrankaBaseEnvV2(VecTask):
 
     def render_headless(self):
         if self.control_steps % 5 == 0:
-            # imageio.imwrite(f'debug/scene_{self.control_steps}.png', self.torch_camera_tensor.cpu().numpy())
+            imageio.imwrite(f'debug/scene_{self.control_steps}.png', self.torch_camera_tensor.cpu().numpy())
             self.camera_frames.append(self.torch_camera_tensor.clone())
-
-    def get_debug_viz(self):
-        if not self.debug_viz or not self.camera_request_visual:
-            return None
-
-        if self.camera_request_visual:
-            if len(self.camera_frames) == 0:
-                if self.progress_buf[-1].item() == 1:
-                    # only start rendering at first time step
-                    self.camera_rendering = True
-                return None
-        
-            if len(self.camera_frames) < self.max_episode_length / 5:
-                return None
-            else:
-                self.camera_rendering = False
-                self.camera_request_visual = False
-                camera_frames = torch.stack(self.camera_frames, dim=0).permute(0, 3, 1, 2).unsqueeze(0)
-                self.camera_frames = []
-                return camera_frames
-        else:
-            return None
 
     def post_physics_step(self):
         self.progress_buf += 1
@@ -461,11 +452,7 @@ class FrankaBaseEnvV2(VecTask):
         self.compute_observations()
         self.compute_reward(self.actions)
 
-        if self.camera_rendering:
-            self.render_headless()
-
-        if self.control_steps % self.camera_rendering_interval == 0:
-            self.camera_request_visual = True
+        self._process_camera_logic()
 
         # update self.extras (not neccessay they are always the same)
         # self.extras["task_indices"] = transform_task_indices(self.task_indices)
@@ -511,10 +498,51 @@ class FrankaBaseEnvV2(VecTask):
             self.cumulatives["reward"][env_ids] = 0
             self.cumulatives["success"][env_ids] = 0
 
-        if self.debug_viz and self.camera_request_visual:
-            self.extras["debug_visual"] = self.get_debug_viz()
-        else:
-            self.extras["debug_visual"] = None
+    def _process_camera_logic(self):
+        """
+        Consolidated logic for scheduling, capturing, and saving camera frames to extras.
+        Replaces render_headless and get_debug_viz.
+        """
+        if not os.path.exists('/var/local/viraj/MTBench/debug/'):
+            os.makedirs('/var/local/viraj/MTBench/debug/', exist_ok=True)
+        # Default to None every step
+        self.extras["debug_visual"] = None
+
+        if not self.debug_viz:
+            return
+
+        # --- SCHEDULING LOGIC ---
+        # If we haven't reached our limit, REQUEST recording for the next episode
+        if self.recorded_episodes_count < self.max_recorded_episodes:
+            self.camera_request_visual = True
+        # Optional: If you ALSO want periodic recording later (e.g. check in every 10k steps)
+        elif self.control_steps % self.camera_rendering_interval == 0:
+            self.camera_request_visual = True
+        
+        # --- START RECORDING ---
+        # If requested, start recording when the episode resets (progress == 1)
+        if self.camera_request_visual and self.progress_buf[-1] == 1:
+            self.camera_rendering = True
+            self.camera_frames = [] 
+
+        # --- CAPTURE FRAMES ---
+        if self.camera_rendering:
+            # Subsample: capture every 5th frame
+            if self.progress_buf[-1] % 5 == 0:
+                self.camera_frames.append(self.torch_camera_tensor.clone())
+
+            # --- FINISH & SAVE ---
+            expected_frames = self.max_episode_length / 5
+            if len(self.camera_frames) >= expected_frames:
+                self.camera_rendering = False
+                self.camera_request_visual = False # Reset request
+                self.recorded_episodes_count += 1  # Increment counter
+                
+                # Stack frames: (Time, Height, Width, Channels) -> (1, T, C, H, W)
+                camera_stack = torch.stack(self.camera_frames, dim=0)
+                camera_stack = camera_stack.permute(0, 3, 1, 2).unsqueeze(0)
+                
+                self.extras["debug_visual"] = camera_stack
     
     @property
     def task_idx2name(self):
@@ -713,16 +741,18 @@ class FrankaBaseEnvV2(VecTask):
         
         # add camera
         # TODO: need to add camera to each env for visual based tasks
+
         if self.debug_viz:
             self.camera_props = gymapi.CameraProperties()
             self.camera_props.width = self.cfg["env"]["cameraWidth"]
             self.camera_props.height = self.cfg["env"]["cameraHeight"]
             self.camera_props.enable_tensors = True
+            
+            # Attach camera to the last environment
             self.rendering_camera = self.gym.create_camera_sensor(self.envs[-1], self.camera_props)
-            if self.rendering_camera!=-1:
+            
+            if self.rendering_camera != -1:
                 self.gym.set_camera_location(self.rendering_camera, self.envs[-1], gymapi.Vec3(-.5, -1, 1.5), gymapi.Vec3(0, 0, 1))
-
-                # obtain camera tensors
                 video_frame_tensor = self.gym.get_camera_image_gpu_tensor(self.sim, self.envs[-1], self.rendering_camera, gymapi.IMAGE_COLOR)
                 self.torch_camera_tensor = gymtorch.wrap_tensor(video_frame_tensor).view((self.camera_props.height, self.camera_props.width, 4))
 

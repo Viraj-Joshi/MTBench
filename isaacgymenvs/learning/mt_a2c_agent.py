@@ -7,11 +7,9 @@ import os
 import time
 
 import torch 
-from torch import nn
 from torch import optim
 import torch.distributed as dist
 from torch.nn import functional as F
-from scipy.optimize import minimize
 
 from rl_games.algos_torch import a2c_continuous
 from rl_games.algos_torch import torch_ext

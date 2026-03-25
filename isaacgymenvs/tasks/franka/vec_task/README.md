@@ -20,7 +20,7 @@ Here are the differences with the original Meta-World. In general, most reward f
 | door_close | |
 | door_lock | |
 | door_unlock | |
-| door_open | |
+| door_open | success condition is different numerically, but in practice, the optimal policy behavior swings door to >= 90 degree angle as desired |
 | drawer_close | |
 | drawer_open | |
 | faucet_close | |
