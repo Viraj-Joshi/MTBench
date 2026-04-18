@@ -144,13 +144,16 @@ def compute_observations(env, env_ids):
     lever_dof_idx = self.franka_dof_start_idx[env_ids] + self.num_franka_dofs
     lever_dof_pos = self.dof_state[lever_dof_idx, 0].unsqueeze(-1)
 
-    self.specialized_kwargs['lever_pull'][env_ids[0].item()]['lever_dof_pos'] = lever_dof_pos
+    sk = self.specialized_kwargs['lever_pull']
+    sk['lever_dof_pos'] = lever_dof_pos
 
-    if self.specialized_kwargs['lever_pull'][env_ids[0].item()]['lever_pos_init'] is None:
-        LEVER_RADIUS = .2
-        self.specialized_kwargs['lever_pull'][env_ids[0].item()]['lever_pos_init'] = obj_pos.clone() # self.obj_init_pos[env_ids].clone() + to_torch([-LEVER_RADIUS,-.12,.25],device=self.device)
-        
-        
+    # Re-capture init pos for envs that just reset (progress_buf == 0)
+    just_reset = self.progress_buf[env_ids] == 0
+    reset_env_ids = env_ids[just_reset]
+    if len(reset_env_ids) > 0:
+        sk['lever_pos_init'][reset_env_ids] = obj_pos[just_reset].clone()
+    sk['env_ids'] = env_ids
+
     return torch.cat([
         obj_pos,
         obj_quat,
@@ -169,7 +172,8 @@ def compute_reward(
     
     offset = specialized_kwargs['offset']
     scale = specialized_kwargs['scale']
-    lever_pos_init = specialized_kwargs['lever_pos_init']
+    env_ids = specialized_kwargs['env_ids']
+    lever_pos_init = specialized_kwargs['lever_pos_init'][env_ids]
     lever_dof_pos = specialized_kwargs['lever_dof_pos']
 
     gripper = (franka_lfinger_pos + franka_rfinger_pos) / 2

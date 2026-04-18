@@ -98,17 +98,17 @@ FRANKA_DEFAULT_DOF_STATES = [
     [0,-.1, 0, -2.6, -.17, 2.6, 0.7, 0.04, 0.04], # peg unplug
     [0, 0.75, 0, -1.6, -0.17, 2.5, .8, 0.04, 0.04], # 30
     [0,.2, 0, -2.5, -.17, 2.6, -0.7, 0.04, 0.04],
-    [0,.2, 0, -2.5, -.17, 2.6, -0.7, 0.04, 0.04],
+    [0, .2, 0, -2.5, -.17, 2.6, -0.7, 0.04, 0.04],
     [0,.25, 0, -2.6, -.17, 2.8, -0.7, 0.04, 0.04],
     [0, .2, 0, -2.5, -.17, 2.7, 0.7, 0.04, 0.04],
     [0,.25, 0, -2.6, -.17, 2.8, -0.7, 0.04, 0.04],
     [0,.25, 0, -2.6, -.17, 2.8, -0.7, 0.04, 0.04],
     [0, .2, 0, -2.5, -.17, 2.6, -0.7, 0.04, 0.04],
     [0, .2, 0, -2.5, -.17, 2.6, -0.7, 0.04, 0.04],
-    [0, .2, 0, -2.5, -.17, 2.6, -0.7, 0.04, 0.04],
+    [0, .2, 0, -2.5, -.17, 2.6, -0.7, 0.04, 0.04], # 39
     [0, .2, 0, -2.5, -.17, 2.6, -0.7, 0.04, 0.04], # 40
     [0, .2, 0, -2.5, -.17, 2.6, -0.7, 0.04, 0.04],
-    [0, .2, 0, -2.5, -.17, 2.6, 0.7, 0.04, 0.04],
+    [0, .2, 0, -2.5, -.17, 2.6, -0.7, 0.04, 0.04],
     [0, -.3, 0, -2.8, -.17, 2.6, 0.7, 0.04, 0.04],
     [0, 0.6, 0, -1.45, 0, 2.06, -.87, 0.04, 0.04],
     [0, 0.6, 0, -1.45, 0, 2.06, -.87, 0.04, 0.04], # 45
@@ -146,7 +146,7 @@ class FrankaBaseEnvV2(VecTask):
         self.camera_rendering_interval = self.cfg["env"]["cameraRenderingInterval"]
 
         self.recorded_episodes_count = 0
-        self.max_recorded_episodes = 3  # Set this to however many you want to capture
+        self.max_recorded_episodes = 0  # Set this to however many you want to capture
 
         self.camera_rendering = False
         self.camera_request_visual = False
@@ -274,7 +274,7 @@ class FrankaBaseEnvV2(VecTask):
             self.rew_buf[ids], self.reset_buf[ids], self.success_buf[ids] = reward_fn(
                 self.reset_buf[ids],self.progress_buf[ids], self.actions[ids], franka_dof_pos[ids],
                 self.franka_lfinger_pos[ids], self.franka_rfinger_pos[ids], self.max_episode_length,
-                self.tcp_init[ids], self.target_pos[ids], self.obj_pos[ids], self.obj_init_pos[ids], self.specialized_kwargs[task_name][ids[0].item()])
+                self.tcp_init[ids], self.target_pos[ids], self.obj_pos[ids], self.obj_init_pos[ids], self.specialized_kwargs[task_name])
             if self.cfg["env"]["sparse_reward"]:
                 self.rew_buf[ids] = self.success_buf[ids].float()
 
@@ -365,7 +365,7 @@ class FrankaBaseEnvV2(VecTask):
         self.actions = actions.clone().to(self.device)
         
         # Assuming actions are [dx, dy, dz, normalized_torque]
-        u_eef_delta, u_gripper = self.actions[:, :-1], self.actions[:, -1]
+        u_eef_delta, u_gripper = self.actions[:, :-1], self.actions[:, -1].clone()
 
         panda_eef_rigid_body_idx = self.franka_rigid_body_start_idx[:] + 13 # panda_grip_site
         panda_eef_rigid_body_states = self.rigid_body_states[panda_eef_rigid_body_idx].view(-1, 13)
@@ -749,11 +749,10 @@ class FrankaBaseEnvV2(VecTask):
             self.camera_props.enable_tensors = True
             
             # Attach camera to the last environment
-            self.rendering_camera = self.gym.create_camera_sensor(self.envs[-1], self.camera_props)
-            
+            self.rendering_camera = self.gym.create_camera_sensor(self.envs[0], self.camera_props)
             if self.rendering_camera != -1:
-                self.gym.set_camera_location(self.rendering_camera, self.envs[-1], gymapi.Vec3(-.5, -1, 1.5), gymapi.Vec3(0, 0, 1))
-                video_frame_tensor = self.gym.get_camera_image_gpu_tensor(self.sim, self.envs[-1], self.rendering_camera, gymapi.IMAGE_COLOR)
+                self.gym.set_camera_location(self.rendering_camera, self.envs[0], gymapi.Vec3(-.5, -1, 1.5), gymapi.Vec3(0, 0, 1))
+                video_frame_tensor = self.gym.get_camera_image_gpu_tensor(self.sim, self.envs[0], self.rendering_camera, gymapi.IMAGE_COLOR)
                 self.torch_camera_tensor = gymtorch.wrap_tensor(video_frame_tensor).view((self.camera_props.height, self.camera_props.width, 4))
 
             img_dir = "debug"
@@ -764,66 +763,55 @@ class FrankaBaseEnvV2(VecTask):
         self.tcp_init = None
         self.target_pos = torch.zeros((self.num_envs, 3), device=self.device)
         self.obj_init_pos = torch.zeros((self.num_envs, 3), device=self.device)
-        self.specialized_kwargs = defaultdict(
-            lambda: defaultdict(
-                lambda: defaultdict(dict)
-            )
-        )
+        self.specialized_kwargs = defaultdict(dict)
         self.env_id_to_task_id = [-1 for _ in range(self.num_envs)]
 
         self.last_rand_vecs = torch.zeros((self.num_envs,6),device=self.device)
         self.last_rand_vecs_test = torch.zeros((self.num_envs,6),device=self.device)
 
-        total_count = 0
-        for tid, env_count in zip(self.task_idx, self.task_env_count):
+        for tid in self.task_idx:
             task_name = self.task_idx2name[tid]
-            self.specialized_kwargs[task_name][total_count] = {}
             if task_name == 'basketball':
-                self.specialized_kwargs[task_name][total_count]['scale'] = to_torch([1.0, 1.0, 1.0], device=self.device)
+                self.specialized_kwargs[task_name]['scale'] = to_torch([1.0, 1.0, 1.0], device=self.device)
             elif task_name == 'box_close':
-                self.specialized_kwargs[task_name][total_count]['error_scale'] = to_torch([1.0, 1.0, 3.0], device=self.device)
+                self.specialized_kwargs[task_name]['error_scale'] = to_torch([1.0, 1.0, 3.0], device=self.device)
             elif task_name == 'coffee_pull':
-                self.specialized_kwargs[task_name][total_count]['scale'] = to_torch([2.0, 2.0, 1.0],device=self.device)
+                self.specialized_kwargs[task_name]['scale'] = to_torch([2.0, 2.0, 1.0],device=self.device)
             elif task_name == 'coffee_push':
-                self.specialized_kwargs[task_name][total_count]['scale'] = to_torch([2.0, 2.0, 1.0],device=self.device)
+                self.specialized_kwargs[task_name]['scale'] = to_torch([2.0, 2.0, 1.0],device=self.device)
             elif task_name == 'dial_turn':
-                self.specialized_kwargs[task_name][total_count]['dial_push_position_init'] = None
-            elif task_name == 'door_lock': 
-                self.specialized_kwargs[task_name][total_count]['scale'] = to_torch([1,.25,.5], device=self.device)
+                self.specialized_kwargs[task_name]['dial_dof_lower_limit'] = self.dial_dof_lower_limits[:1]
+            elif task_name == 'door_lock':
+                self.specialized_kwargs[task_name]['scale'] = to_torch([1,.25,.5], device=self.device)
             elif task_name == 'door_unlock':
-                self.specialized_kwargs[task_name][total_count]['scale'] = to_torch([1.0, 1.0, 1.0], device=self.device)
+                self.specialized_kwargs[task_name]['scale'] = to_torch([1.0, 1.0, 1.0], device=self.device)
             elif task_name == 'drawer_open':
-                self.specialized_kwargs[task_name][total_count]['scale'] = to_torch([1.0, 1.0, 1.0],device=self.device)
+                self.specialized_kwargs[task_name]['scale'] = to_torch([1.0, 1.0, 1.0],device=self.device)
             elif task_name == 'handle_pull_side':
-                self.specialized_kwargs[task_name][total_count]['scale'] = to_torch([1.0, 1.0, 1.0],device=self.device)
+                self.specialized_kwargs[task_name]['scale'] = to_torch([1.0, 1.0, 1.0],device=self.device)
             elif task_name == 'lever_pull':
-                self.specialized_kwargs[task_name][total_count]['scale'] =  to_torch([1.0,4.0,4.0],device=self.device)
-                self.specialized_kwargs[task_name][total_count]['offset'] = to_torch([0, 0, 0.07],device=self.device)
-                self.specialized_kwargs[task_name][total_count]['lever_pos_init'] = None
+                self.specialized_kwargs[task_name]['scale'] =  to_torch([1.0,4.0,4.0],device=self.device)
+                self.specialized_kwargs[task_name]['offset'] = to_torch([0, 0, 0.07],device=self.device)
+                self.specialized_kwargs[task_name]['lever_pos_init'] = torch.zeros((self.num_envs, 3), device=self.device)
             elif task_name == 'peg_insert_side':
-                self.specialized_kwargs[task_name][total_count]['peg_head_pos_init'] = None
-                self.specialized_kwargs[task_name][total_count]['scale'] = to_torch([2.0, 1.0, 2.0], device=self.device)
-            elif task_name == 'pick_place_wall':
-                self.specialized_kwargs[task_name][total_count]['in_place_scaling'] = to_torch([3.0, 1.0, 1.0], device=self.device)
+                self.specialized_kwargs[task_name]['peg_head_pos_init'] = torch.zeros((self.num_envs, 3), device=self.device)
+                self.specialized_kwargs[task_name]['scale'] = to_torch([2.0, 1.0, 2.0], device=self.device)
             elif task_name == 'push_wall':
-                self.specialized_kwargs[task_name][total_count]['in_place_scaling'] = to_torch([3.0, 1.0, 1.0], device=self.device)
-                self.specialized_kwargs[task_name][total_count]['midpoint'] = to_torch([0.17, .1, 1.0470], device=self.device)
+                self.specialized_kwargs[task_name]['in_place_scaling'] = to_torch([1.0, 1.0, 1.0], device=self.device)
+                self.specialized_kwargs[task_name]['midpoint'] = to_torch([0.02, 0.25, 1.0470], device=self.device)
             elif task_name == 'soccer':
-                self.specialized_kwargs[task_name][total_count]['scale'] = to_torch([1.0, 3.0, 1.0],device=self.device)
+                self.specialized_kwargs[task_name]['scale'] = to_torch([1.0, 3.0, 1.0],device=self.device)
             elif task_name == 'stick_push':
-                self.specialized_kwargs[task_name][total_count]['stick_init_pos'] = None
-                self.specialized_kwargs[task_name][total_count]['thermos_dof_pos'] = None
+                self.specialized_kwargs[task_name]['yz_scaling'] = to_torch([1.0, 1.0, 2.0], device=self.device)
+                self.specialized_kwargs[task_name]['stick_init_pos'] = torch.zeros((self.num_envs, 3), device=self.device)
             elif task_name == 'stick_pull':
-                self.specialized_kwargs[task_name][total_count]['stick_init_pos'] = None
-                self.specialized_kwargs[task_name][total_count]['yz_scaling'] = to_torch([1.0, 1.0, 2.0], device=self.device)
-                self.specialized_kwargs[task_name][total_count]['thermos_dof_pos'] = None
-                self.specialized_kwargs[task_name][total_count]['thermos_insertion_pos'] = None
-                self.specialized_kwargs[task_name][total_count]['thermos_insertion_pos_init'] = None
+                self.specialized_kwargs[task_name]['yz_scaling'] = to_torch([1.0, 1.0, 2.0], device=self.device)
+                self.specialized_kwargs[task_name]['thermos_insertion_pos_init'] = torch.zeros((self.num_envs, 3), device=self.device)
+                self.specialized_kwargs[task_name]['stick_init_pos'] = torch.zeros((self.num_envs, 3), device=self.device)
             elif task_name == 'sweep':
-                self.specialized_kwargs[task_name][total_count]['init_left_pad'] = None
-                self.specialized_kwargs[task_name][total_count]['init_right_pad'] = None
-                self.specialized_kwargs[task_name][total_count]['scale'] = to_torch([1.0, 1.0, 1.0],device=self.device)
-            total_count += env_count
+                # self.specialized_kwargs[task_name]['init_left_pad'] = torch.zeros((self.num_envs, 3), device=self.device)
+                # self.specialized_kwargs[task_name]['init_right_pad'] = torch.zeros((self.num_envs, 3), device=self.device)
+                self.specialized_kwargs[task_name]['scale'] = to_torch([1.0, 1.0, 1.0],device=self.device)
             
         total_count = 0
         for tid, env_count in zip(self.task_idx, self.task_env_count):
@@ -835,52 +823,6 @@ class FrankaBaseEnvV2(VecTask):
                 self.progress_buf[total_count:total_count+env_count] = torch.randint_like(self.progress_buf[total_count:total_count+env_count], high=int(self.max_episode_length))
                 
             total_count += env_count
-
-        #------------------- initialize special variables required for some reward functions -------------------#
-        # self.specialized_kwargs['basketball']['scale'] = to_torch([1.0, 1.0, 1.0], device=self.device)
-        
-        # self.specialized_kwargs['box_close']['error_scale'] = to_torch([1.0, 1.0, 3.0], device=self.device)
-        
-        # self.specialized_kwargs['coffee_pull']['scale'] = to_torch([2.0, 2.0, 1.0],device=self.device)
-        
-        # self.specialized_kwargs['coffee_push']['scale'] = to_torch([2.0, 2.0, 1.0],device=self.device)
-        
-        # self.specialized_kwargs['dial_turn']['dial_push_position_init'] = None
-        
-        # self.specialized_kwargs['door_lock']['scale'] = to_torch([1,.25,.5], device=self.device)
-        
-        # self.specialized_kwargs['door_unlock']['scale'] = to_torch([1.0, 1.0, 1.0], device=self.device)
-
-        # self.specialized_kwargs['drawer_open']['scale'] = to_torch([1.0, 1.0, 1.0],device=self.device)
-
-        # self.specialized_kwargs['handle_pull_side']['scale'] = to_torch([1.0, 1.0, 1.0],device=self.device)
-
-        # self.specialized_kwargs['lever_pull']['scale'] =  to_torch([1.0,4.0,4.0],device=self.device)
-        # self.specialized_kwargs['lever_pull']['offset'] = to_torch([0, 0, 0.07],device=self.device)
-        # self.specialized_kwargs['lever_pull']['lever_pos_init'] = None
-
-        # self.specialized_kwargs['peg_insert_side']['peg_head_pos_init'] = None
-        # self.specialized_kwargs['peg_insert_side']['scale'] = to_torch([2.0, 1.0, 2.0], device=self.device)
-        
-        # self.specialized_kwargs['pick_place_wall']['in_place_scaling'] = to_torch([3.0, 1.0, 1.0], device=self.device)
-
-        # self.specialized_kwargs["push_wall"]["in_place_scaling"] = to_torch([3.0, 1.0, 1.0], device=self.device)
-        # self.specialized_kwargs["push_wall"]["midpoint"] = to_torch([0.17, .1, 1.0470], device=self.device)
-
-        # self.specialized_kwargs['soccer']['scale'] = to_torch([1.0, 3.0, 1.0],device=self.device)
-        
-        # self.specialized_kwargs['stick_push']['stick_init_pos'] = None
-        # self.specialized_kwargs['stick_push']['thermos_dof_pos'] = None
-
-        # self.specialized_kwargs['stick_pull']['stick_init_pos'] = None
-        # self.specialized_kwargs['stick_pull']['yz_scaling'] = to_torch([1.0, 1.0, 2.0], device=self.device)
-        # self.specialized_kwargs['stick_pull']['thermos_dof_pos'] = None
-        # self.specialized_kwargs['stick_pull']['thermos_insertion_pos'] = None
-        # self.specialized_kwargs['stick_pull']['thermos_insertion_pos_init'] = None
-
-        # self.specialized_kwargs['sweep']['init_left_pad'] = None
-        # self.specialized_kwargs['sweep']['init_right_pad'] = None
-        # self.specialized_kwargs['sweep']['scale'] = to_torch([1.0, 1.0, 1.0],device=self.device)
 
     def reset_idx(self, env_ids):
         # map tid -> env_ids

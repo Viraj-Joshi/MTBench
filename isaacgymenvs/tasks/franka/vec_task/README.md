@@ -16,11 +16,11 @@ Here are the differences with the original Meta-World. In general, most reward f
 | coffee_pull | |
 | coffee_push | |
 | dial_turn | |
-| disassemble | peg is fixed to table to make task easier |
+| disassemble | peg is fixed to table to make task easier, 2.5cm shorter to make task solvable, and reduced friction | reset distribution x dimension centered around 2.5cm instead of 7.5cm
 | door_close | |
 | door_lock | |
 | door_unlock | |
-| door_open | success condition is different numerically, but in practice, the optimal policy behavior swings door to >= 90 degree angle as desired |
+| door_open |  | success condition is different numerically, but in practice, the optimal policy behavior swings door to >= 90 degree angle as desired
 | drawer_close | |
 | drawer_open | |
 | faucet_close | |
@@ -43,13 +43,13 @@ Here are the differences with the original Meta-World. In general, most reward f
 | plate_slide | |
 | push_back | |
 | push | |
-| push_wall | |
+| push_wall | | object moved back closer to robot and distance between wall and target increased so robot wrist can fit in between|
 | reach | |
 | reach_wall | |
-| shelf_place | some shelf collisions removed |
+| shelf_place | |
 | soccer | |
-| stick_pull | | |
-| stick_push | | |
+| stick_pull | using a stick 2x as long | |
+| stick_push | using a stick 2x as long | |
 | sweep_into_goal | | |
 | sweep | |
 | window_close | |

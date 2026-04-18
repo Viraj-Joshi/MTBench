@@ -148,9 +148,16 @@ def compute_observations(env, env_ids):
     # compute peg_head_pos and peg_head_pos_init
     peg_head_rigid_body_idx = \
         self.franka_rigid_body_start_idx[env_ids] + self.num_franka_rigid_bodies + 1
-    if self.specialized_kwargs['peg_insert_side'][env_ids[0].item()]['peg_head_pos_init'] is None:
-        self.specialized_kwargs['peg_insert_side'][env_ids[0].item()]['peg_head_pos_init'] = self.rigid_body_states[peg_head_rigid_body_idx].view(-1, 13)[:,:3]
-    self.specialized_kwargs['peg_insert_side'][env_ids[0].item()]['peg_head_pos'] = self.rigid_body_states[peg_head_rigid_body_idx].view(-1, 13)[:,:3]
+    sk = self.specialized_kwargs['peg_insert_side']
+    peg_head_pos = self.rigid_body_states[peg_head_rigid_body_idx].view(-1, 13)[:,:3]
+
+    # Re-capture init pos for envs that just reset (progress_buf == 0)
+    just_reset = self.progress_buf[env_ids] == 0
+    reset_env_ids = env_ids[just_reset]
+    if len(reset_env_ids) > 0:
+        sk['peg_head_pos_init'][reset_env_ids] = peg_head_pos[just_reset].clone()
+    sk['peg_head_pos'] = peg_head_pos
+    sk['env_ids'] = env_ids
 
     multi_env_ids_int32 = (self.franka_actor_idx[env_ids]+2).flatten().to(dtype=torch.int32)
     peg_block_pos = self.root_state_tensor[multi_env_ids_int32,:3]
@@ -165,10 +172,10 @@ def compute_observations(env, env_ids):
         self.franka_rigid_body_start_idx[env_ids] + self.num_franka_rigid_bodies + self.num_peg_insert_side_peg_bodies + 5
     tlc_col_box_2_rigid_body_idx = \
         self.franka_rigid_body_start_idx[env_ids] + self.num_franka_rigid_bodies + self.num_peg_insert_side_peg_bodies + 6
-    self.specialized_kwargs['peg_insert_side'][env_ids[0].item()]['brc_col_box_1_pos'] = self.rigid_body_states[brc_col_box_1_rigid_body_idx].view(-1, 13)[:,:3]
-    self.specialized_kwargs['peg_insert_side'][env_ids[0].item()]['tlc_col_box_1_pos'] = self.rigid_body_states[tlc_col_box_1_rigid_body_idx].view(-1, 13)[:,:3]
-    self.specialized_kwargs['peg_insert_side'][env_ids[0].item()]['brc_col_box_2_pos'] = self.rigid_body_states[brc_col_box_2_rigid_body_idx].view(-1, 13)[:,:3]
-    self.specialized_kwargs['peg_insert_side'][env_ids[0].item()]['tlc_col_box_2_pos'] = self.rigid_body_states[tlc_col_box_2_rigid_body_idx].view(-1, 13)[:,:3]
+    sk['brc_col_box_1_pos'] = self.rigid_body_states[brc_col_box_1_rigid_body_idx].view(-1, 13)[:,:3]
+    sk['tlc_col_box_1_pos'] = self.rigid_body_states[tlc_col_box_1_rigid_body_idx].view(-1, 13)[:,:3]
+    sk['brc_col_box_2_pos'] = self.rigid_body_states[brc_col_box_2_rigid_body_idx].view(-1, 13)[:,:3]
+    sk['tlc_col_box_2_pos'] = self.rigid_body_states[tlc_col_box_2_rigid_body_idx].view(-1, 13)[:,:3]
 
     return torch.cat([
         obj_pos,
@@ -191,8 +198,9 @@ def compute_reward(
     brc_col_box_2 = specialized_kwargs['brc_col_box_2_pos']
 
     obj_head = specialized_kwargs['peg_head_pos']
-    peg_head_pos_init = specialized_kwargs['peg_head_pos_init']
-    scale = specialized_kwargs["scale"]  
+    env_ids = specialized_kwargs['env_ids']
+    peg_head_pos_init = specialized_kwargs['peg_head_pos_init'][env_ids]
+    scale = specialized_kwargs["scale"]
 
     tcp = (franka_lfinger_pos + franka_rfinger_pos) / 2
     tcp_to_obj = torch.norm(obj_pos - tcp,dim=-1)

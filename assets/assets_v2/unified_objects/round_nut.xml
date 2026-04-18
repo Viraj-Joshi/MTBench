@@ -49,7 +49,6 @@
                 <geom class="asmbly_col" pos="0 -0.13 0" size="0.019 0.038 0.016" type="box" mass=".04"/>
                 <geom class="asmbly_col" euler="1.57 0 0" pos="0 -0.1 0" size="0.012 0.05" type="cylinder" mass=".02"/>
                 <body pos="0 0 0" name="RoundNutCenter"></body>
-                <site rgba="1 1 1 1" size="0.005 0.005 0.005" pos="0 -.13 0.0" type="sphere" name="RoundNut-8"/>
             </body>
 
         </body>

@@ -7,7 +7,32 @@ from gym import spaces
 
 from isaacgym import gymutil, gymtorch, gymapi
 from isaacgymenvs.utils.torch_jit_utils import to_torch
-from isaacgymenvs.tasks.reward_utils import _gripper_caging_reward, tolerance, hamacher_product
+from isaacgymenvs.tasks.reward_utils import _gripper_caging_reward, _sigmoids, hamacher_product
+
+_DEFAULT_VALUE_AT_MARGIN = .1
+
+@torch.jit.script
+def tolerance_fixed(
+    x,
+    margin,
+    bounds=(0.0, 0.0),
+    sigmoid="gaussian",
+    value_at_margin=_DEFAULT_VALUE_AT_MARGIN,
+):
+    # type: (Tensor, Tensor, Tuple[float,float], str, float) -> Tensor
+    """Fixed tolerance that correctly returns 1.0 when x is within bounds and margin > 0."""
+    lower, upper = bounds
+    if lower > upper:
+        raise ValueError("Lower bound must be <= upper bound.")
+    if (margin < 0).any():
+        b = margin < 0
+        raise ValueError(f"`margin` must be non-negative. Neg at indices {b.nonzero()} with values {margin[b.nonzero()]}")
+
+    in_bounds = torch.logical_and(lower <= x, x <= upper)
+    d = torch.where(x < lower, lower - x, x - upper) / torch.clamp(margin, min=1e-8)
+    sigmoid_value = _sigmoids(d, value_at_margin, sigmoid)
+    value = torch.where(in_bounds, 1.0, torch.where(margin > 0, sigmoid_value, 0.0))
+    return value
 from isaacgymenvs.utils.torch_jit_utils import tensor_clamp, to_torch
 
 
@@ -87,10 +112,10 @@ def create_envs(
     
     # ---------------------- Define goals ----------------------
     # obj is used for stick AND thermos placement while goal is the target pos
-    obj_low = (.05, 0, self._table_surface_pos[2]+stick_height/2)
-    obj_high = (.15, .1, self._table_surface_pos[2]+stick_height/2)
-    goal_low = (-.1, -.45, self._table_surface_pos[2]+.110)
-    goal_high = (-.05, -.35, self._table_surface_pos[2]+.110)
+    obj_low = (.10, 0, self._table_surface_pos[2]+stick_height/2)
+    obj_high = (.20, .1, self._table_surface_pos[2]+stick_height/2)
+    goal_low = (-.10, -.45, self._table_surface_pos[2]+.110)
+    goal_high = (.05, -.35, self._table_surface_pos[2]+.110)
 
     # goal_space = spaces.Box(np.array(goal_low),np.array(goal_high))
     random_reset_space = spaces.Box(
@@ -157,15 +182,15 @@ def compute_observations(env, env_ids):
     thermos_rotation_pos = thermos_insertion_rigid_body_states[:, 3:7]
 
     multi_env_ids_int32 = (self.franka_actor_idx[env_ids]+1).flatten().to(dtype=torch.int32)
-    thermos_pos = self.root_state_tensor[multi_env_ids_int32,:3]
-    self.specialized_kwargs['stick_pull'][env_ids[0].item()]['thermos_pos'] = thermos_pos
+    sk = self.specialized_kwargs['stick_pull']
 
-    # because thermos base is fixed, to get the real thermos position, add its DoF positions to the thermos pos
-    self.specialized_kwargs['stick_pull'][env_ids[0].item()]['thermos_dof_pos'] = torch.vstack((self.dof_state[(self.franka_dof_start_idx[env_ids]+self.num_franka_dofs)][:,0]\
-                                                                             , -self.dof_state[(self.franka_dof_start_idx[env_ids]+self.num_franka_dofs+1)][:,0])).T
-    if self.specialized_kwargs['stick_pull'][env_ids[0].item()]['thermos_insertion_pos_init'] is None:
-        self.specialized_kwargs['stick_pull'][env_ids[0].item()]['thermos_insertion_pos_init'] = thermos_insertion_pos
-    self.specialized_kwargs['stick_pull'][env_ids[0].item()]['thermos_insertion_pos'] = thermos_insertion_pos
+    # Re-capture init pos for envs that just reset (progress_buf == 0)
+    just_reset = self.progress_buf[env_ids] == 0
+    reset_env_ids = env_ids[just_reset]
+    if len(reset_env_ids) > 0:
+        sk['thermos_insertion_pos_init'][reset_env_ids] = thermos_insertion_pos[just_reset].clone()
+    sk['thermos_insertion_pos'] = thermos_insertion_pos
+    sk['env_ids'] = env_ids
 
     ################
 
@@ -180,18 +205,13 @@ def compute_observations(env, env_ids):
     stick_end_rigid_body_states = self.rigid_body_states[stick_end_rigid_body_idx].view(-1, 13)
     stick_end_pos = stick_end_rigid_body_states[:, :3]
 
-    if self.specialized_kwargs['stick_pull'][env_ids[0].item()]['stick_init_pos'] is None:
-        self.specialized_kwargs['stick_pull'][env_ids[0].item()]['stick_init_pos'] = stick_pos
-    self.specialized_kwargs['stick_pull'][env_ids[0].item()]['stick_end_pos'] = stick_end_pos
-
-    # print("stick end pos: ", stick_end_pos[0])
-    # print("thermos insertion pos: ", thermos_insertion_pos[0])
+    # Re-capture init pos for envs that just reset
+    if len(reset_env_ids) > 0:
+        sk['stick_init_pos'][reset_env_ids] = stick_pos[just_reset].clone()
+    sk['stick_end_pos'] = stick_end_pos
 
     ################
 
-    thermos_insertion_pos_cpy = thermos_insertion_pos.clone()
-    thermos_insertion_pos_cpy[:,:2] += self.specialized_kwargs['stick_pull'][env_ids[0].item()]['thermos_dof_pos']
-    
     return torch.cat([
         stick_pos,
         stick_rot,
@@ -201,8 +221,8 @@ def compute_observations(env, env_ids):
 
 @torch.jit.script
 def _stick_is_inserted(handle:torch.Tensor, end_of_stick:torch.Tensor) -> torch.Tensor:
-    return torch.logical_and((end_of_stick[:,1] <= (handle[:,1])), \
-            torch.logical_and((torch.abs(end_of_stick[:,0] - handle[:,0]) <= 0.040),torch.abs(end_of_stick[:,2] - handle[:,2]) <= 0.020))
+    return torch.logical_and((end_of_stick[:,1] <= (handle[:,1] - 0.02)), \
+            torch.logical_and((torch.abs(end_of_stick[:,0] - handle[:,0]) <= 0.040),torch.abs(end_of_stick[:,2] - handle[:,2]) <= 0.040))
 
 @torch.jit.script
 def compute_reward(
@@ -215,49 +235,27 @@ def compute_reward(
     TARGET_RADIUS = .05
     _STICK_TARGET_RADIUS = .05
     tcp = (franka_lfinger_pos + franka_rfinger_pos) / 2
-    stick_init_pos = specialized_kwargs['stick_init_pos']
-    thermos_pos = specialized_kwargs['thermos_pos']
-    thermos_dof_pos = specialized_kwargs['thermos_dof_pos']
+    env_ids = specialized_kwargs['env_ids']
+    stick_init_pos = specialized_kwargs['stick_init_pos'][env_ids]
 
-    # define the container as the thermos insertion pos with some offsets
-    container = specialized_kwargs['thermos_insertion_pos'].clone()
-    container[:,:2] += thermos_dof_pos # add the x and y offsets from DoFs
-    # container[:,1] += -.05             # add y offset to encourage end of stick to go well beyond the container
-    container_init_pos = specialized_kwargs['thermos_insertion_pos_init'].clone()
-    # container_init_pos[:,1] += -.05
+    container_init_pos = specialized_kwargs['thermos_insertion_pos_init'][env_ids]
 
-    # define the handle as the insertion pos as well but without offsets
-    handle = specialized_kwargs['thermos_insertion_pos'].clone()
-    handle[:,:2] += thermos_dof_pos
+    # define the handle as the insertion pos
+    handle = specialized_kwargs['thermos_insertion_pos']
     handle_to_target = torch.norm(target_pos - handle, dim=-1) 
 
     # define relevant distances from stick
     tcp_to_stick = torch.norm(stick_pos - tcp, dim=-1)
     yz_scaling = specialized_kwargs['yz_scaling']
-    stick_to_container = torch.norm((stick_pos-container)*yz_scaling,dim=-1)
-    stick_in_place_margin = torch.norm((stick_init_pos - container_init_pos)*yz_scaling,dim=-1)
-    stick_in_place = tolerance(
-        stick_to_container,
-        bounds=(0.0,_STICK_TARGET_RADIUS),
-        margin=stick_in_place_margin,
-        sigmoid="long_tail",
-    )
+    end_of_stick = specialized_kwargs['stick_end_pos']
 
-    stick_to_target = torch.norm(stick_pos - target_pos, dim=-1)
-    stick_in_place_margin_2 = torch.norm(stick_init_pos - target_pos,dim=-1)
-    stick_in_place_2 = tolerance(
-        stick_to_target,
-        bounds=(0.0, TARGET_RADIUS),
-        margin=stick_in_place_margin_2,
-        sigmoid="long_tail",
-    )
-
-    container_to_target = torch.norm(handle - target_pos,dim=-1)  # changed from container to handle so offset doesn't affect this calculation
-    container_in_place_margin = torch.norm(obj_init_pos - target_pos,dim=-1)
-    container_in_place = tolerance(
-        container_to_target,
-        bounds=(0.0, TARGET_RADIUS),
-        margin=container_in_place_margin,
+    # Guide stick center toward the handle
+    stick_to_handle = torch.norm((stick_pos - handle) * yz_scaling, dim=-1)
+    stick_to_handle_margin = torch.norm((stick_init_pos - container_init_pos) * yz_scaling, dim=-1)
+    stick_in_place = tolerance_fixed(
+        stick_to_handle,
+        bounds=(0.0, _STICK_TARGET_RADIUS),
+        margin=stick_to_handle_margin,
         sigmoid="long_tail",
     )
 
@@ -273,32 +271,42 @@ def compute_reward(
         init_tcp,
         actions,
         stick_init_pos,
-        object_reach_radius=0.0,
+        object_reach_radius=0.01,
         obj_radius=0.02,
         pad_success_thresh=0.05,
         xz_thresh=0.005,
         medium_density=True
     )
 
-    grasp_success = (tcp_to_stick < .03) & (tcp_opened > 0) & ((stick_pos[:,2]-.01) > stick_init_pos[:,2])
+    grasp_success = (tcp_to_stick < .05) & (tcp_opened > 0) & ((stick_pos[:,2]-.01) > stick_init_pos[:,2])
 
     object_grasped = torch.where(grasp_success, 1, object_grasped)
 
     in_place_and_object_grasped = hamacher_product(object_grasped, stick_in_place)
 
-    end_of_stick = specialized_kwargs['stick_end_pos']
-    stick_is_inserted = _stick_is_inserted(handle,end_of_stick)
-    # print("stick is inserted: ", stick_is_inserted[0], handle[0,1], end_of_stick[0,1])
+    stick_is_inserted = _stick_is_inserted(handle, end_of_stick)
+
+    # X-pull: reward for closing the X gap, only after stick is inserted
+    # Gate on stick_is_inserted directly (same 0.02 threshold) so x_pull fires immediately upon insertion
+    handle_x_to_target_x = torch.abs(handle[:, 0] - target_pos[:, 0])
+    x_pull_margin = torch.clamp(torch.abs(obj_init_pos[:, 0] - target_pos[:, 0]), min=0.15)
+    x_pull = tolerance_fixed(handle_x_to_target_x, bounds=(0.0, 0.02), margin=x_pull_margin, sigmoid="long_tail")
+    x_pull = torch.where(stick_is_inserted, x_pull, torch.zeros_like(x_pull))
+
+    # Y-push: reward for closing the Y gap, only after stick is inserted
+    handle_y_to_target_y = torch.abs(handle[:, 1] - target_pos[:, 1])
+    y_push_margin = torch.clamp(torch.abs(obj_init_pos[:, 1] - target_pos[:, 1]), min=0.15)
+    y_push = tolerance_fixed(handle_y_to_target_y, bounds=(0.0, 0.02), margin=y_push_margin, sigmoid="gaussian")
+    y_push = torch.where(stick_is_inserted, y_push, torch.zeros_like(y_push))
 
     rewards = in_place_and_object_grasped
-    rewards = torch.where(grasp_success,1.0 + in_place_and_object_grasped + 5.0 * stick_in_place,rewards)
+    rewards = torch.where(grasp_success, 1.0 + in_place_and_object_grasped + 5.0 * stick_in_place, rewards)
     rewards = torch.where((grasp_success) & (stick_is_inserted),
-                          1.0 + in_place_and_object_grasped + 5.0 + 10.0*stick_in_place_2 + 10.0*container_in_place,
+                          1.0 + in_place_and_object_grasped + 3.0 + 10.0 * x_pull + 5.0 * y_push,
                           rewards) * .01
-    
-    success = torch.logical_and((handle_to_target <= .12),torch.logical_and(grasp_success,stick_is_inserted))
-    # print(success[0],handle_to_target[0],grasp_success[0],stick_is_inserted[0])
-    rewards = torch.where(success, 20.0, rewards) 
+
+    success = torch.logical_and((handle_to_target <= .12), torch.logical_and(grasp_success, stick_is_inserted))
+    rewards = torch.where(success, 50.0, rewards)
 
     # reset if max length reached or success
     reset_buf = torch.where(success | (progress_buf >= max_episode_length - 1), torch.ones_like(reset_buf), reset_buf)
@@ -320,8 +328,7 @@ def reset_env(env, tid, env_ids, random_reset_space):
         self.last_rand_vecs[env_ids] = last_rand_vecs
 
     # get obj init pos (thermos insertion pos, not the root body)
-    self.obj_init_pos[env_ids] = self.last_rand_vecs[env_ids,:3]
-    # self.obj_init_pos[env_ids,0] = self.last_rand_vecs[env_ids,0] # align thermos with stick
+    self.obj_init_pos[env_ids] = self.last_rand_vecs[env_ids,:3].clone()
     self.obj_init_pos[env_ids,0] += -.09
     self.obj_init_pos[env_ids,1] += -.3
     self.obj_init_pos[env_ids,2] = 1.137
@@ -369,7 +376,6 @@ def reset_env(env, tid, env_ids, random_reset_space):
     # reset thermos and object pose
     thermos_multi_env_ids_int32 = (self.franka_actor_idx[env_ids]+1).flatten().to(dtype=torch.int32)
     # not the insertion pos, but the root body pos
-    # thermos_pos = torch.vstack((self.last_rand_vecs[env_ids,3],self.last_rand_vecs[env_ids,4]-.2,torch.ones_like(self.last_rand_vecs[env_ids,3])*1.0270)).T
     self.root_state_tensor[thermos_multi_env_ids_int32,:3] = self.last_rand_vecs[env_ids,:3].clone()
     self.root_state_tensor[thermos_multi_env_ids_int32,1] -= .3 
     self.root_state_tensor[thermos_multi_env_ids_int32,2] = 1.0270 

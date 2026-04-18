@@ -148,8 +148,8 @@ def compute_observations(env, env_ids):
     obj_pos = obj_rigid_body_states[:, 0:3] - to_torch([0,0,.01],device=self.device)
     obj_rot = obj_rigid_body_states[:, 3:7]
 
-    self.specialized_kwargs['box_close'][env_ids[0].item()]['lid_base_pos'] = lid_base_rigid_body_states[:, 0:3]
-    self.specialized_kwargs['box_close'][env_ids[0].item()]['obj_rot'] = obj_rot
+    self.specialized_kwargs['box_close']['lid_base_pos'] = lid_base_rigid_body_states[:, 0:3]
+    self.specialized_kwargs['box_close']['obj_rot'] = obj_rot
 
     multi_env_ids_int32 = (self.franka_actor_idx[env_ids]+2).flatten().to(dtype=torch.int32)
     box_base_pos = self.root_state_tensor[multi_env_ids_int32,:3]

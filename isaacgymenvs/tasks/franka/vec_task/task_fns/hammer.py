@@ -170,8 +170,8 @@ def compute_observations(env, env_ids):
     hammer_block_dof_idx = self.franka_dof_start_idx[env_ids] + self.num_franka_dofs
     hammer_block_dof_pos = self.dof_state[hammer_block_dof_idx,0].unsqueeze(-1)
     
-    self.specialized_kwargs["hammer"][env_ids[0].item()]["hammer_block_dof_pos"] = hammer_block_dof_pos
-    self.specialized_kwargs["hammer"][env_ids[0].item()]["hammer_rot"] = obj_rot
+    self.specialized_kwargs["hammer"]["hammer_block_dof_pos"] = hammer_block_dof_pos
+    self.specialized_kwargs["hammer"]["hammer_rot"] = obj_rot
 
 
     target_pos_rigid_body_idx = self.franka_rigid_body_start_idx[env_ids] + self.num_franka_rigid_bodies + 3

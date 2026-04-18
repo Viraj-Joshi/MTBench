@@ -22,7 +22,7 @@ def create_envs(
 
     # ---------------------- Load assets ----------------------
     asset_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../../../../assets")
-    box_asset_file = "assets_v2/unified_objects/cylinder.xml"
+    box_asset_file = "assets_v2/unified_objects/block.xml"
     shelf_asset_file = "assets_v2/unified_objects/shelf.xml"
     shelf_texture_path = "assets_v2/textures/wood1.png"
 
@@ -38,13 +38,6 @@ def create_envs(
     shelf_asset_options.fix_base_link = True
     shelf_asset_options.disable_gravity = False
     shelf_asset = self.gym.load_asset(self.sim, asset_root, shelf_asset_file, shelf_asset_options )
-
-    # override franka start pose
-    franka_start_pose = gymapi.Transform()
-    table_thickness = 0.054
-    table_stand_height = 0.01
-    franka_start_pose.p = gymapi.Vec3(-0.65, 0.0, 1.0 + table_thickness / 2 + table_stand_height)
-    franka_start_pose.r = gymapi.Quat(0.0, 0.0, 0.0, 1.0)
 
     # define start pose for box (will be reset later)
     box_height = .04
@@ -78,11 +71,11 @@ def create_envs(
     
     # ---------------------- Define goals ----------------------
     # obj is used by box, goal is used by shelf
-    obj_low =   (-.05, -.10, self._table_surface_pos[2]+box_height/2)
-    obj_high =  (-.05,  .10, self._table_surface_pos[2]+box_height/2)
+    obj_low =   (-.1, -.10, self._table_surface_pos[2]+box_height/2)
+    obj_high =  ( .0,  .10, self._table_surface_pos[2]+box_height/2)
 
-    goal_low =  (.20, -.10, self._table_surface_pos[2] + .3) 
-    goal_high = (.30,  .10, self._table_surface_pos[2] + .3)
+    goal_low =  (.2, -.10, self._table_surface_pos[2] + .3) 
+    goal_high = (.25,  .10, self._table_surface_pos[2] + .3)
 
     random_reset_space = spaces.Box(
         np.hstack((obj_low, goal_low)),
@@ -167,8 +160,21 @@ def compute_reward(
     tcp_init, target_pos, obj, obj_init_pos, specialized_kwargs
 ):
     # type: (Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, float, Tensor, Tensor, Tensor, Tensor, Dict[str,Tensor]) -> Tuple[Tensor, Tensor, Tensor]
-    _TARGET_RADIUS = 0.05 
+    _TARGET_RADIUS = 0.05
     TABLE_Z = 1.0270
+    # Franka forearm is much thicker than Sawyer's; inserting deep between the shelf
+    # side walls is infeasible. We shift the target back toward the shelf opening
+    # Offset 0.12 placed the block in front of the shelf (obj.x ~ 0.10, shelf front
+    # edge at 0.137). Reduced to 0.07 so effective target x lands ~0-4cm inside the
+    # shelf, on the middle-shelf surface, while still sparing the forearm from a
+    # deep insertion.
+    TARGET_X_OFFSET = 0.07
+    # Franka's elbow smashes aganist the the higher side wall in y, unlike sawyer's skinny arm
+    # Bias the effective target toward -y so upon insertion into shelf, franka's arm fits easier
+    TARGET_Y_OFFSET = 0.02
+    target_pos = target_pos.clone()
+    target_pos[:, 0] = target_pos[:, 0] - TARGET_X_OFFSET
+    target_pos[:, 1] = target_pos[:, 1] - TARGET_Y_OFFSET
 
     tcp = (franka_lfinger_pos + franka_rfinger_pos) / 2
 
@@ -196,7 +202,7 @@ def compute_reward(
         actions,
         obj_init_pos,
         object_reach_radius=0.01,
-        obj_radius=0.015,
+        obj_radius=0.01,
         pad_success_thresh=0.05,
         xz_thresh=0.005,
         medium_density=True
@@ -215,10 +221,10 @@ def compute_reward(
                             ((target_pos[:,0] - 3 * _TARGET_RADIUS) < obj[:,0]) & (obj[:,0] < target_pos[:,0]), 
                                 torch.clip(in_place-bound_loss,0.0,1.0), in_place)
 
-    in_place3 = torch.where((TABLE_Z <= obj[:,2]) & (obj[:,2] < z_offset) & 
-                            ((target_pos[:,1]-.15) < obj[:,1]) & (obj[:,1] < (target_pos[:,1]+.15)) &
-                            (obj[:,0] >= target_pos[:,0]), 
-                                0, in_place2)
+    MIDDLE_SHELF_TOP_Z = 1.277
+    SHELF_FRONT_X = 0.137
+    in_place3 = torch.where((obj[:, 2] < MIDDLE_SHELF_TOP_Z) & (obj[:, 0] > SHELF_FRONT_X),
+                            torch.zeros_like(in_place2), in_place2)
     
     rewards = torch.where((tcp_to_obj < .025) & (tcp_opened > 0) & ((obj[:,2]-.01) > obj_init_pos[:,2]), rewards + 1.0 + 5.0 * in_place3, rewards)*.01
     

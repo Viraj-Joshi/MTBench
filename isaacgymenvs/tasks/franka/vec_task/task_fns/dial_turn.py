@@ -152,9 +152,6 @@ def compute_observations(env, env_ids):
 
     dial_push_position = _get_pos_objects_dial_turn(dial_pos, dial_dof_pos)
 
-    if self.specialized_kwargs['dial_turn'][env_ids[0].item()]['dial_push_position_init'] is None:
-        self.specialized_kwargs['dial_turn'][env_ids[0].item()]['dial_push_position_init'] = _get_pos_objects_dial_turn(dial_pos, dial_dof_pos)
-      
     return torch.cat([
         dial_push_position,
         dial_quat,
@@ -164,14 +161,20 @@ def compute_observations(env, env_ids):
     ], dim=-1)
 
 
-@torch.jit.script
+# @torch.jit.script
 def compute_reward(
     reset_buf: torch.Tensor, progress_buf: torch.Tensor, actions: torch.Tensor, franka_dof_pos: torch.Tensor,
     franka_lfinger_pos: torch.Tensor, franka_rfinger_pos: torch.Tensor, max_episode_length: float, 
     tcp_init: torch.Tensor, target_pos: torch.Tensor, obj_pos: torch.Tensor, obj_init_pos: torch.Tensor, specialized_kwargs: Dict[str,torch.Tensor]
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     TARGET_RADIUS = 0.06 # changed from .07
-    dial_push_position_init = specialized_kwargs["dial_push_position_init"]
+    dial_dof_lower = specialized_kwargs["dial_dof_lower_limit"]  # scalar-ish (1,)
+    # reconstruct dial_push_position_init from obj_init_pos + constant dial offset at reset angle
+    dial_radius = 0.05
+    dial_push_position_init = obj_init_pos + torch.stack([
+        -torch.cos(dial_dof_lower) * dial_radius,
+         torch.sin(dial_dof_lower) * dial_radius,
+         torch.zeros_like(dial_dof_lower)], dim=-1)
 
     dial_push_position = obj_pos.clone()
     dial_push_position[:,2] += .09

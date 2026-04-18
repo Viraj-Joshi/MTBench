@@ -67,11 +67,11 @@ def create_envs(
     
     # ---------------------- Define goals ----------------------
     # nut uses obj and peg uses goal
-    obj_low = (0, 0, self._table_surface_pos[2]+.02)
-    obj_high = (0, 0, self._table_surface_pos[2]+.02)
+    obj_low = (-.05, 0, self._table_surface_pos[2]+.02)
+    obj_high = (-.05, 0, self._table_surface_pos[2]+.02)
 
-    goal_low = (.15, -.1, self._table_surface_pos[2] + .1)
-    goal_high = (.25, .1, self._table_surface_pos[2] + .1)
+    goal_low = (.10, -.1, self._table_surface_pos[2] + .05)
+    goal_high = (.20, .1, self._table_surface_pos[2] + .05)
 
     # goal_space = spaces.Box(np.array(goal_low),np.array(goal_high))
     random_reset_space = spaces.Box(
@@ -139,8 +139,8 @@ def compute_observations(env, env_ids):
         self.franka_rigid_body_start_idx[env_ids] + self.num_franka_rigid_bodies + 3
     round_nut_center_rigid_body_states = self.rigid_body_states[round_nut_center_rigid_body_idx].view(-1, 13)
 
-    self.specialized_kwargs['assembly'][env_ids[0].item()]['round_nut_center_pos'] = round_nut_center_rigid_body_states[:, 0:3]
-    self.specialized_kwargs['assembly'][env_ids[0].item()]['round_nut_center_quat'] = round_nut_center_rigid_body_states[:, 3:7]
+    self.specialized_kwargs['assembly']['round_nut_center_pos'] = round_nut_center_rigid_body_states[:, 0:3]
+    self.specialized_kwargs['assembly']['round_nut_center_quat'] = round_nut_center_rigid_body_states[:, 3:7]
 
     round_nut_pos = wrench_handle_rigid_body_states[:, 0:3]
     round_nut_quat = wrench_handle_rigid_body_states[:, 3:7]
@@ -169,26 +169,28 @@ def _reward_quat_assemble(nut_quat:torch.Tensor)->torch.Tensor:
     error = nut_quat.clone()
     error[:,-1]-=1
     error = torch.norm(error,dim=-1)
-    return torch.maximum(1.0 - error / 4, torch.zeros_like(error))
+    # Sharpen the penalty significantly to penalize drooping of the heavy end.
+    # An error of 0.25 (approx 30 degree rotation) will result in a 0 multiplier.
+    return torch.maximum(1.0 - error * 4.0, torch.zeros_like(error))
 
 @torch.jit.script
-def _reward_pos_assemble(wrench_center: torch.Tensor, target_pos: torch.Tensor) -> Tuple[torch.Tensor,torch.Tensor]:
+def _reward_pos_assemble(wrench_center: torch.Tensor, target_pos: torch.Tensor) -> Tuple[torch.Tensor,torch.Tensor,torch.Tensor,torch.Tensor,torch.Tensor,torch.Tensor,torch.Tensor,torch.Tensor]:
     TABLE_Z = 1.0270
+    offset = .01
 
     pos_error = target_pos - wrench_center
     
     radius = torch.norm(pos_error[:,:2],dim=-1)
 
     aligned = radius < .02
-    hooked = pos_error[:,2] > 0.0 # if the wrench is hooked, the wrench z is lower than the target z
+    hooked = pos_error[:,2] > offset # nut must be at least 3cm below peg top to count as hooked
     success = aligned & hooked
     
-    # Target height is a 3D funnel centered on the peg.
-    # use the success flag to widen the bottleneck once the agent
-    # learns to place the wrench on the peg -- no reason to encourage
-    # tons of alignment accuracy if task is already solved
+    # When far: target is peg top (preserves lift incentive).
+    # When XY-close: target drops by hooked margin so in_place peak aligns with success zone.
     threshold = torch.where(success, .02, .01)
-    target_height = torch.where(radius > threshold, .02 * torch.log(radius - threshold) + (TABLE_Z + .2), TABLE_Z)
+    near_peg = radius < 0.05
+    target_height = torch.where(near_peg, target_pos[:,2] - offset, target_pos[:,2])
 
     pos_error[:,2] = target_height - wrench_center[:,2]
     pos_error[:,2] *= 3.0  # Make the z error more important than the xy error
@@ -196,16 +198,22 @@ def _reward_pos_assemble(wrench_center: torch.Tensor, target_pos: torch.Tensor) 
 
     a = .1  # Relative importance of just *trying* to lift the wrench
     b = .9 # Relative importance of placing the wrench on the peg
-    
+
     lifted = (wrench_center[:,2] > (TABLE_Z + .02)) | (radius < threshold)
-    in_place = a * lifted + b * tolerance(
+    tol = tolerance(
         pos_error,
         bounds=(0.0, 0.02),
         margin=torch.ones_like(pos_error)*.4,
         sigmoid="long_tail",
     )
 
-    return in_place, success
+    # Explicit radius bonus: clear gradient toward the peg at all distances.
+    # Denominator must cover full starting distance (~0.19-0.23) so there's gradient from step 0.
+    radius_bonus = 1.0 - torch.clamp(radius / 0.25, min=0.0, max=1.0)
+
+    in_place = a * lifted + b * (0.5 * tol + 0.5 * radius_bonus)
+
+    return in_place, success, radius, lifted, pos_error, target_height, tol, radius_bonus
 
 @torch.jit.script
 def compute_reward(
@@ -214,60 +222,44 @@ def compute_reward(
         init_tcp: torch.Tensor, target_pos: torch.Tensor, wrench_pos: torch.Tensor, obj_init_pos: torch.Tensor, specialized_kwargs: Dict[str,torch.Tensor]
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     
-    WRENCH_HANDLE_LENGTH = .02
     tcp = (franka_lfinger_pos + franka_rfinger_pos) / 2
     wrench_center = specialized_kwargs["round_nut_center_pos"]
     wrench_center_quat = specialized_kwargs["round_nut_center_quat"]
 
-    # `self._gripper_caging_reward` assumes that the target object can be
-    # approximated as a sphere. This is not true for the wrench handle, so
-    # to avoid re-writing the `self._gripper_caging_reward` we pass in a
-    # modified wrench position.
-    # This modified position's X value will perfect match the hand's X value
-    # as long as it's within a certain threshold
-    threshold = WRENCH_HANDLE_LENGTH / 2
-    wrench_threshed = torch.where(torch.abs(wrench_pos[:,1]-tcp[:,1]) < threshold, tcp[:,1], wrench_pos[:,1]).unsqueeze(-1)
-    wrench_threshed = torch.hstack([wrench_pos[:,0].unsqueeze(-1), wrench_threshed, wrench_pos[:,2].unsqueeze(-1)])
+    # `wrench_center` is the round nut (Y=0 in local space).
+    # `wrench_pos` is the tip of the handle (Y=-0.13 in local space).
+    # Grab the cylinder on the handle at Y=-0.1 (t = 0.1/0.13 ≈ 0.77).
+    ideal_grab_point = wrench_center * 0.23 + wrench_pos * 0.77
 
     reward_grab = _gripper_caging_reward(
-        wrench_threshed,
+        ideal_grab_point,
         franka_lfinger_pos,
         franka_rfinger_pos,
         tcp,
         init_tcp,
         actions,
         obj_init_pos,
-        object_reach_radius=0.0,
-        obj_radius=0.02,
+        object_reach_radius=0.01,
+        obj_radius=0.01,
         pad_success_thresh=0.05,
         xz_thresh=0.005,
         medium_density=True
     )
 
-    reward_in_place, success = _reward_pos_assemble(wrench_center, target_pos)
+    # Firm grasp gate: tcp must be close to grab point AND fingers closed around it
+    tcp_to_grab = torch.norm(tcp - ideal_grab_point, dim=-1)
+    finger_dist = torch.norm(franka_lfinger_pos - franka_rfinger_pos, dim=-1)
+    grasped = (tcp_to_grab < 0.02) & (finger_dist < 0.06)
 
-    TABLE_Z = 1.0270
-    lifted = wrench_center[:,2] > (TABLE_Z + .02)
-    reward_quat = _reward_quat_assemble(wrench_center_quat)
-    rewards = (2.0 * reward_grab + 8.0 * reward_in_place) * reward_quat * .01
+    # Placement reward: guide nut toward the peg (only active when grasped)
+    in_place, success, radius, lifted, pos_err, tgt_height, tol, radius_bonus = _reward_pos_assemble(wrench_center, target_pos)
+    gated_in_place = torch.where(grasped, in_place, torch.zeros_like(in_place))
 
-    rewards = torch.where(success,10,rewards)
+    # 2 pts for grasping, 8 pts for placing nut on peg (only if firmly grasped)
+    rewards = (2.0 * reward_grab + 8.0 * gated_in_place) * .01
 
-    # in_place_and_object_grasped = hamacher_product(
-    #     reward_grab, reward_in_place
-    # )
-    # rewards = in_place_and_object_grasped
-    # tcp_to_obj = torch.norm(wrench_pos - tcp,dim=-1)
+    rewards = torch.where(success, 10.0, rewards)
 
-    # finger1_dof = franka_dof_pos[:,-2]
-    # finger2_dof = -franka_dof_pos[:,-1]
-    # # create a normalized 0 to 1 measurement of how open the gripper is, where 1 is fully open and 0 is fully closed
-    # tcp_opened = (finger1_dof - finger2_dof) / .08
-
-    # rewards = torch.where((tcp_to_obj < .02) & (tcp_opened > 0 ) & ((wrench_center[:,2]-.01) > obj_init_pos[:,2]), rewards + 1.0 + 5.0 * reward_in_place, rewards)*.01
-
-    # rewards = torch.where(success,10,rewards)
-    
     # Compute resets
     reset_buf = torch.logical_or(success, progress_buf >= max_episode_length - 1).to(reset_buf.dtype)
 
@@ -292,7 +284,8 @@ def reset_env(env, tid, env_ids, random_reset_space):
     self.target_pos[env_ids] = self.last_rand_vecs[env_ids,3:] + to_torch([0,0,.05],device=self.device)
 
     # get random nut positions
-    self.obj_init_pos[env_ids] =  self.last_rand_vecs[env_ids,:3] + to_torch([0, .13, 0],device=self.device)
+    # ideal_grab_point is the cylinder at Y=-0.1 in local space (77% from nut to tip).
+    self.obj_init_pos[env_ids] =  self.last_rand_vecs[env_ids,:3] + to_torch([0, -0.1, 0],device=self.device)
 
     # reset franka
     pos = tensor_clamp(

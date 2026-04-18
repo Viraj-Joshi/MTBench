@@ -24,9 +24,9 @@ env:
   exemptedInitAtRandomProgressTasks: ${...exempted_tasks} # [1,2,30,31,32,37,38,39,42]
   taskEmbedding: True
   seed: ${...seed}
-  cameraRenderingInterval: 100
-  cameraWidth: 1024
-  cameraHeight: 1024
+  cameraRenderingInterval: 1000
+  cameraWidth: 512
+  cameraHeight: 512
   sparse_reward: ${...sparse_reward}
   termination_on_success: ${...termination_on_success}
   reward_scale: ${...reward_scale}

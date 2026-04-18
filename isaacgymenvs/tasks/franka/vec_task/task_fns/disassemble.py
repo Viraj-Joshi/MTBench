@@ -22,7 +22,7 @@ def create_envs(
 
     # ---------------------- Load assets ----------------------
     asset_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../../../../assets")
-    peg_asset_file = "assets_v2/unified_objects/assembly_peg.xml"
+    peg_asset_file = "assets_v2/unified_objects/disassemble_peg.xml"
     round_nut_asset_file = "assets_v2/unified_objects/round_nut.xml"
 
     # create peg asset
@@ -67,8 +67,8 @@ def create_envs(
     
     # ---------------------- Define goals ----------------------
     # nut uses obj
-    obj_low = (0, -.1, self._table_surface_pos[2]+.025)
-    obj_high = (.15, 0, self._table_surface_pos[2]+.02501)
+    obj_low = (-.05, -.1, self._table_surface_pos[2]+.025)
+    obj_high = (.10, 0, self._table_surface_pos[2]+.02501)
 
     goal_low =  (0,    -.1, self._table_surface_pos[2]+round_nut_height/2) # NOT USED
     goal_high = (0.15,  .1, self._table_surface_pos[2]+round_nut_height/2) # NOT USED
@@ -140,8 +140,8 @@ def compute_observations(env, env_ids):
         self.franka_rigid_body_start_idx[env_ids] + self.num_franka_rigid_bodies + 3
     round_nut_center_rigid_body_states = self.rigid_body_states[round_nut_center_rigid_body_idx].view(-1, 13)
 
-    self.specialized_kwargs['disassemble'][env_ids[0].item()]['round_nut_center_pos'] = round_nut_center_rigid_body_states[:, 0:3]
-    self.specialized_kwargs['disassemble'][env_ids[0].item()]['round_nut_quat'] = wrench_handle_rigid_body_states[:, 3:7]
+    self.specialized_kwargs['disassemble']['round_nut_center_pos'] = round_nut_center_rigid_body_states[:, 0:3]
+    self.specialized_kwargs['disassemble']['round_nut_quat'] = wrench_handle_rigid_body_states[:, 3:7]
 
     round_nut_pos = wrench_handle_rigid_body_states[:, 0:3]
     round_nut_quat = wrench_handle_rigid_body_states[:, 3:7]
@@ -160,72 +160,125 @@ def compute_observations(env, env_ids):
 
 @torch.jit.script
 def _reward_quat_disassemble(nut_quat: torch.Tensor) -> torch.Tensor:
-    # Ideal laid-down wrench has quat [0, 0, 0, 1]
-    # Rather than deal with an angle between quaternions, just approximate:
+    # Ideal laid-down wrench has quat [0, 0, 0, 1].
+    # Use |q . q_ideal| to handle the SO(3) double-cover (q and -q are the same
+    # rotation but ||q - q_ideal|| differs hugely between them). Result in [0,1]:
+    # 1 = perfectly aligned, 0 = orthogonal rotation.
     ideal_quat = torch.tensor([0, 0, 0, 1], device=nut_quat.device, dtype=nut_quat.dtype)
-    error = torch.norm(nut_quat - ideal_quat, dim=-1)
-    
-    return torch.maximum(torch.zeros_like(error), 1 - error)
+    return torch.abs((nut_quat * ideal_quat).sum(dim=-1))
 
 @torch.jit.script
-def _reward_pos_disassemble(wrench_center: torch.Tensor, target_pos: torch.Tensor) -> torch.Tensor:
-    pos_error = target_pos - wrench_center
-    pos_error[:,2] += .1
-
-    pos_error = torch.norm(pos_error,dim=-1)
-
-    a = 0.1  # Relative importance of just *trying* to lift the wrench
-    b = 0.9  # Relative importance of placing the wrench on the peg
+def _reward_pos_disassemble(wrench_center: torch.Tensor, z_low: torch.Tensor, target_pos: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     TABLE_Z = 1.0270
-    lifted = wrench_center[:,2] > (TABLE_Z + .02)
-    in_place = a * lifted + b * tolerance(
-        pos_error,
+    PEG_TOP_Z = TABLE_Z + 0.075  # peg lowered 2.5cm: top at +0.075 instead of +0.10
+
+    pos_error = target_pos - wrench_center
+    z_dist = torch.abs(pos_error[:, 2])
+
+    # Weight Z more since lifting is the primary objective
+    pos_error[:, 2] *= 3.0
+    pos_error_norm = torch.norm(pos_error, dim=-1)
+
+    tol = tolerance(
+        pos_error_norm,
         bounds=(0.0, 0.02),
-        margin=torch.ones_like(pos_error) * .2,
+        margin=torch.ones_like(pos_error_norm) * .4,
         sigmoid="long_tail",
     )
 
-    return in_place
+    # Height bonus uses z_low (actual ring clearance), not wrench_center —
+    # otherwise the policy farms this bonus by tilting the wrench while the
+    # ring stays wedged on the peg (center rises from tilt geometry alone).
+    height_above_start = z_low - 1.046  # NUT_START_Z, matches starting z_low
+    height_bonus = torch.clamp(height_above_start / 0.05, min=0.0, max=1.0)
+
+    # Reward only meaningful lifts (above peg top), not just leaving the table
+    lifted = z_low > (PEG_TOP_Z - 0.02)
+
+    # Gate tol contribution on `lifted` so the policy can't farm XY-proximity
+    # reward by just holding the nut flat at start height.
+    lifted_f = lifted.float()
+    a = 0.1  # try-to-lift
+    b = 0.9  # placement
+    in_place = a * lifted_f + b * (0.4 * tol * lifted_f + 0.6 * height_bonus)
+
+    success = z_dist < .05
+
+    return in_place, success, z_dist, tol, height_bonus
 
 @torch.jit.script
 def compute_reward(
         reset_buf: torch.Tensor, progress_buf: torch.Tensor, actions: torch.Tensor, franka_dof_pos: torch.Tensor,
-        franka_lfinger_pos: torch.Tensor, franka_rfinger_pos: torch.Tensor, max_episode_length: float, 
+        franka_lfinger_pos: torch.Tensor, franka_rfinger_pos: torch.Tensor, max_episode_length: float,
         init_tcp: torch.Tensor, target_pos: torch.Tensor, wrench_pos: torch.Tensor, obj_init_pos: torch.Tensor, specialized_kwargs: Dict[str,torch.Tensor]
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    
-    WRENCH_HANDLE_LENGTH = .02
+
     tcp = (franka_lfinger_pos + franka_rfinger_pos) / 2
     wrench_center = specialized_kwargs["round_nut_center_pos"]
     wrench_quat = specialized_kwargs["round_nut_quat"]
 
-    threshold = WRENCH_HANDLE_LENGTH / 2
-    wrench_threshed = torch.where(torch.abs(wrench_pos[:,1]-tcp[:,1]) < threshold, tcp[:,1], wrench_pos[:,1]).unsqueeze(-1)
-    wrench_threshed = torch.hstack([wrench_pos[:,0].unsqueeze(-1),wrench_threshed,wrench_pos[:,2].unsqueeze(-1)])
-
-    reward_quat = _reward_quat_disassemble(wrench_quat)
+    # `wrench_center` is the round nut (Y=0 in local space).
+    # `wrench_pos` is the tip of the handle (Y=-0.13 in local space).
+    # Grip at 77% along the handle (Y=-0.10 in nut frame) — the midpoint of the
+    # 12mm collision cylinder.
+    # Grabbing the tip (Y=-0.13) for creates a lever arm, turns vertical
+    # grip force into a horizontal moment on the ring, pinning it against the
+    # peg edge 13mm off-center and stalling lift at z=1.082 (peg top is 1.127).
+    # Shortening the lever arm ~25% matches what assembly.py does and lets the
+    # lift force transfer cleanly to the ring without torquing it.
+    ideal_grab_point = wrench_center + 0.77 * (wrench_pos - wrench_center)
 
     reward_grab = _gripper_caging_reward(
-        wrench_threshed,
+        ideal_grab_point,
         franka_lfinger_pos,
         franka_rfinger_pos,
         tcp,
         init_tcp,
         actions,
         obj_init_pos,
-        object_reach_radius=0.0,
-        obj_radius=0.02,
+        object_reach_radius=0.01,
+        obj_radius=0.01,
         pad_success_thresh=0.05,
         xz_thresh=0.005,
         medium_density=True
     )
 
-    reward_in_place = _reward_pos_disassemble(wrench_center, target_pos)
-    rewards = (2.0 * reward_grab + 6.0 * reward_in_place) * .01
+    # Firm grasp gate: tcp must be close to grab point AND fingers closed around it
+    tcp_to_grab = torch.norm(tcp - ideal_grab_point, dim=-1)
+    finger_dist = torch.norm(franka_lfinger_pos - franka_rfinger_pos, dim=-1)
+    grasped = (tcp_to_grab < 0.02) & (finger_dist < 0.06)
 
-    success = torch.abs(wrench_center[:,2] - target_pos[:,2]) < .05 # & (torch.abs(reward_quat-1)<.05)
-    rewards = torch.where(success,10,rewards)
-    
+    # Physics-grounded lift reward: credit the LOWEST point of the ring, not the
+    # center. When the ring is tilted, one edge stays near the table while the
+    # other rises — ring CENTER z goes up, but the low edge is still caught on
+    # the peg/table. Using z_low = center_z - ring_radius * sin(tilt) makes the
+    # reward reflect actual clearance: a tilted "lift" earns nothing because the
+    # low edge hasn't moved, while a flat lift gets full credit.
+    NUT_START_Z = 1.046  # actual starting z_low observed in logs
+    RING_RADIUS = 0.048  # outer-capsule radius of the round nut
+    tilt_cos = torch.clamp(1.0 - 2.0 * (wrench_quat[:, 0] ** 2 + wrench_quat[:, 1] ** 2), min=0.0)
+    tilt_sin = torch.sqrt(torch.clamp(1.0 - tilt_cos ** 2, min=0.0))
+    z_low = wrench_center[:, 2] - RING_RADIUS * tilt_sin
+
+    # Lifting reward: guide nut upward to target height (only active when grasped).
+    # Pass z_low so height_bonus/lifted use actual clearance, not wrench_center
+    # (which is tilt-exploitable).
+    in_place, success, z_dist, tol, height_bonus = _reward_pos_disassemble(wrench_center, z_low, target_pos)
+    gated_in_place = torch.where(grasped, in_place, torch.zeros_like(in_place))
+
+    lift_raw = torch.clamp((z_low - NUT_START_Z) / 0.05, min=0.0, max=1.0)
+    # Concave shaping (sqrt) gives 5x more gradient at tiny lifts (2-5mm), where
+    # the policy needs the strongest signal to escape "grasp and hold" basin.
+    # Linear gave ~0.04 at 2mm; sqrt gives ~0.20.
+    lift_shaped = torch.sqrt(lift_raw)
+    # Gate on grasp: without this, policy bats the nut up with an open gripper.
+    lift_progress = torch.where(grasped, lift_shaped, torch.zeros_like(lift_raw))
+
+    # 1 pt grasp, 16 pts lift (sqrt z_low), 8 pts placement.
+    rewards = (1.0 * reward_grab + 16.0 * lift_progress + 8.0 * gated_in_place) * .01
+
+    rewards = torch.where(success, 50.0, rewards)
+
     # Compute resets
     reset_buf = torch.logical_or(success, progress_buf >= max_episode_length - 1).to(reset_buf.dtype)
 
@@ -246,10 +299,11 @@ def reset_env(env, tid, env_ids, random_reset_space):
     elif not self.fixed:
         self.last_rand_vecs[env_ids] = last_rand_vecs
     
-    self.obj_init_pos[env_ids] = self.last_rand_vecs[env_ids,:3] + to_torch([0,-.13,0],device=self.device)
+    self.obj_init_pos[env_ids] = self.last_rand_vecs[env_ids,:3] + to_torch([0,-0.13,0],device=self.device)
     
-    # target is same as x,y as obj init pos but z is where nut should be lifted to 
-    self.target_pos[env_ids] = self.last_rand_vecs[env_ids,:3] + to_torch([0,0,.15],device=self.device)        
+    # target is same x,y as peg; peg top now at last_rand_vecs.z + 0.075 (peg
+    # lowered 2.5cm), so target = peg_top + 0.025 clearance.
+    self.target_pos[env_ids] = self.last_rand_vecs[env_ids,:3] + to_torch([0,0,.10],device=self.device)
 
     # reset franka
     pos = tensor_clamp(
@@ -276,7 +330,7 @@ def reset_env(env, tid, env_ids, random_reset_space):
     
     # reset object pose
     peg_multi_env_ids_int32 = (self.franka_actor_idx[env_ids]+2).flatten().to(dtype=torch.int32)
-    self.root_state_tensor[peg_multi_env_ids_int32,:3] = self.last_rand_vecs[env_ids,:3] + to_torch([0, 0, 0.025],device=self.device)
+    self.root_state_tensor[peg_multi_env_ids_int32,:3] = self.last_rand_vecs[env_ids,:3] + to_torch([0, 0, 0.0],device=self.device)
     self.root_state_tensor[peg_multi_env_ids_int32,3:7] = to_torch([0,0,0,1],device=self.device)
     self.root_state_tensor[peg_multi_env_ids_int32,7:13] = to_torch([0,0,0,0,0,0],device=self.device)
 

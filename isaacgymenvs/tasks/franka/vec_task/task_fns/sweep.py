@@ -116,16 +116,20 @@ def create_envs(
 
 def compute_observations(env, env_ids):
     self = env
-    
+
     multi_env_ids_int32 = (self.franka_actor_idx[env_ids]+1).flatten().to(dtype=torch.int32)
     obj_pos = self.root_state_tensor[multi_env_ids_int32,:3]
     obj_rot = self.root_state_tensor[multi_env_ids_int32,3:7]
 
-    if self.specialized_kwargs['sweep']['init_left_pad'] is None:
-        self.specialized_kwargs['sweep']['init_left_pad'] = self.franka_lfinger_pos[env_ids]
-    if self.specialized_kwargs['sweep']['init_right_pad'] is None:
-        self.specialized_kwargs['sweep']['init_right_pad'] = self.franka_rfinger_pos[env_ids]
-    
+    sk = self.specialized_kwargs['sweep']
+
+    # # Re-capture init pad positions for envs that just reset (progress_buf == 0)
+    # just_reset = self.progress_buf[env_ids] == 0
+    # reset_env_ids = env_ids[just_reset]
+    # if len(reset_env_ids) > 0:
+    #     sk['init_left_pad'][reset_env_ids] = self.franka_lfinger_pos[reset_env_ids].clone()
+    #     sk['init_right_pad'][reset_env_ids] = self.franka_rfinger_pos[reset_env_ids].clone()
+
     return torch.cat([
         obj_pos,
         obj_rot,
@@ -134,124 +138,124 @@ def compute_observations(env, env_ids):
         torch.zeros_like(obj_rot),
     ], dim=-1)
 
-@torch.jit.script
-def _gripper_caging_reward(
-    obj_pos : torch.Tensor,
-    franka_lfinger_pos : torch.Tensor,
-    franka_rfinger_pos : torch.Tensor,
-    tcp_center : torch.Tensor,
-    init_tcp : torch.Tensor,
-    actions : torch.Tensor,
-    obj_init_pos : torch.Tensor,
-    specialized_kwargs : Dict[str,torch.Tensor],
-    obj_radius : float,
-    pad_success_thresh : float = 0, # All of these args are unused
-    object_reach_radius : float = 0,
-    xz_thresh : float = 0,
-    desired_gripper_effort : float = 1.0,
-    high_density : bool = False,
-    medium_density : bool = False
-) -> torch.Tensor:
-    """Reward for agent grasping obj.
+# @torch.jit.script
+# def _gripper_caging_reward(
+#     obj_pos : torch.Tensor,
+#     franka_lfinger_pos : torch.Tensor,
+#     franka_rfinger_pos : torch.Tensor,
+#     tcp_center : torch.Tensor,
+#     init_tcp : torch.Tensor,
+#     actions : torch.Tensor,
+#     obj_init_pos : torch.Tensor,
+#     specialized_kwargs : Dict[str,torch.Tensor],
+#     obj_radius : float,
+#     pad_success_thresh : float = 0, # All of these args are unused
+#     object_reach_radius : float = 0,
+#     xz_thresh : float = 0,
+#     desired_gripper_effort : float = 1.0,
+#     high_density : bool = False,
+#     medium_density : bool = False
+# ) -> torch.Tensor:
+#     """Reward for agent grasping obj.
 
-    Args:
-        obj_pos,
-        franka_lfinger_pos
-        franka_rfinger_pos
-        tcp_center
-        init_tcp
-        actions
-        obj_init_pos
-        obj_radius(float):radius of object's bounding sphere
-        specialized_kwargs(Dict[str,torch.Tensor]): specialized kwargs for the task.
-        pad_success_thresh(float): successful distance of gripper_pad
-            to object
-        object_reach_radius(float): successful distance of gripper center
-            to the object.
-        xz_thresh(float): successful distance of gripper in x_z axis to the
-            object. Y axis not included since the caging function handles
-                successful grasping in the Y axis.
-        desired_gripper_effort(float): desired gripper effort, defaults to 1.0.
-        high_density(bool): flag for high-density. Cannot be used with medium-density.
-        medium_density(bool): flag for medium-density. Cannot be used with high-density.
-    """
-    pad_success_margin = 0.05
-    grip_success_margin = obj_radius + 0.01
-    x_z_success_margin = 0.005
+#     Args:
+#         obj_pos,
+#         franka_lfinger_pos
+#         franka_rfinger_pos
+#         tcp_center
+#         init_tcp
+#         actions
+#         obj_init_pos
+#         obj_radius(float):radius of object's bounding sphere
+#         specialized_kwargs(Dict[str,torch.Tensor]): specialized kwargs for the task.
+#         pad_success_thresh(float): successful distance of gripper_pad
+#             to object
+#         object_reach_radius(float): successful distance of gripper center
+#             to the object.
+#         xz_thresh(float): successful distance of gripper in x_z axis to the
+#             object. Y axis not included since the caging function handles
+#                 successful grasping in the Y axis.
+#         desired_gripper_effort(float): desired gripper effort, defaults to 1.0.
+#         high_density(bool): flag for high-density. Cannot be used with medium-density.
+#         medium_density(bool): flag for medium-density. Cannot be used with high-density.
+#     """
+#     pad_success_margin = 0.05
+#     grip_success_margin = obj_radius + 0.01
+#     x_z_success_margin = 0.005
 
-    left_pad = franka_lfinger_pos
-    right_pad = franka_rfinger_pos
-    init_left_pad = specialized_kwargs["init_left_pad"]
-    init_right_pad = specialized_kwargs["init_right_pad"]
+#     left_pad = franka_lfinger_pos
+#     right_pad = franka_rfinger_pos
+#     init_left_pad = specialized_kwargs["init_left_pad"]
+#     init_right_pad = specialized_kwargs["init_right_pad"]
 
-    delta_object_y_left_pad = left_pad[:,0] - obj_pos[:,0]
-    delta_object_y_right_pad = obj_pos[:,0] - right_pad[:,0]
+#     delta_object_y_left_pad = left_pad[:,0] - obj_pos[:,0]
+#     delta_object_y_right_pad = obj_pos[:,0] - right_pad[:,0]
 
-    right_caging_margin = torch.abs(
-        torch.abs(obj_pos[:,0] - init_right_pad[:,0]) - pad_success_margin
-    )
-    left_caging_margin = torch.abs(
-        torch.abs(obj_pos[:,0] - init_left_pad[:,0]) - pad_success_margin
-    )
-    right_caging = tolerance(
-        delta_object_y_right_pad,
-        bounds=(obj_radius, pad_success_margin),
-        margin=right_caging_margin,
-        sigmoid="long_tail",
-    )
-    left_caging = tolerance(
-        delta_object_y_left_pad,
-        bounds=(obj_radius, pad_success_margin),
-        margin=left_caging_margin,
-        sigmoid="long_tail",
-    )
-    right_gripping = tolerance(
-        delta_object_y_right_pad,
-        bounds=(obj_radius, grip_success_margin),
-        margin=right_caging_margin,
-        sigmoid="long_tail",
-    )
-    left_gripping = tolerance(
-        delta_object_y_left_pad,
-        bounds=(obj_radius, grip_success_margin),
-        margin=left_caging_margin,
-        sigmoid="long_tail",
-    )
+#     right_caging_margin = torch.abs(
+#         torch.abs(obj_pos[:,0] - init_right_pad[:,0]) - pad_success_margin
+#     )
+#     left_caging_margin = torch.abs(
+#         torch.abs(obj_pos[:,0] - init_left_pad[:,0]) - pad_success_margin
+#     )
+#     right_caging = tolerance(
+#         delta_object_y_right_pad,
+#         bounds=(obj_radius, pad_success_margin),
+#         margin=right_caging_margin,
+#         sigmoid="long_tail",
+#     )
+#     left_caging = tolerance(
+#         delta_object_y_left_pad,
+#         bounds=(obj_radius, pad_success_margin),
+#         margin=left_caging_margin,
+#         sigmoid="long_tail",
+#     )
+#     right_gripping = tolerance(
+#         delta_object_y_right_pad,
+#         bounds=(obj_radius, grip_success_margin),
+#         margin=right_caging_margin,
+#         sigmoid="long_tail",
+#     )
+#     left_gripping = tolerance(
+#         delta_object_y_left_pad,
+#         bounds=(obj_radius, grip_success_margin),
+#         margin=left_caging_margin,
+#         sigmoid="long_tail",
+#     )
 
-    y_caging = hamacher_product(right_caging, left_caging)
-    y_gripping = hamacher_product(right_gripping, left_gripping)
+#     y_caging = hamacher_product(right_caging, left_caging)
+#     y_gripping = hamacher_product(right_gripping, left_gripping)
 
-    xz = [1, 2]
-    tcp_xz = tcp_center[:,xz]
+#     xz = [1, 2]
+#     tcp_xz = tcp_center[:,xz]
    
-    obj_position_x_z = obj_pos[:,xz]
-    tcp_obj_norm_x_z = torch.norm(tcp_xz - obj_position_x_z,dim=-1)
+#     obj_position_x_z = obj_pos[:,xz]
+#     tcp_obj_norm_x_z = torch.norm(tcp_xz - obj_position_x_z,dim=-1)
 
-    init_obj_x_z = obj_init_pos[:,xz]
-    init_tcp_x_z = init_tcp[:,xz]
+#     init_obj_x_z = obj_init_pos[:,xz]
+#     init_tcp_x_z = init_tcp[:,xz]
 
-    tcp_obj_x_z_margin = (
-        torch.maximum(torch.norm(init_obj_x_z - init_tcp_x_z, dim=-1) - x_z_success_margin,torch.zeros_like(init_obj_x_z[:,0]))
-    )
+#     tcp_obj_x_z_margin = (
+#         torch.maximum(torch.norm(init_obj_x_z - init_tcp_x_z, dim=-1) - x_z_success_margin,torch.zeros_like(init_obj_x_z[:,0]))
+#     )
 
-    x_z_caging = tolerance(
-        tcp_obj_norm_x_z,
-        bounds=(0.0, x_z_success_margin),
-        margin=tcp_obj_x_z_margin,
-        sigmoid="long_tail",
-    )
+#     x_z_caging = tolerance(
+#         tcp_obj_norm_x_z,
+#         bounds=(0.0, x_z_success_margin),
+#         margin=tcp_obj_x_z_margin,
+#         sigmoid="long_tail",
+#     )
 
-    # Closed-extent gripper information for caging reward-------------
-    # gripper_closed = (
-    #     torch.minimum(torch.maximum(torch.zeros_like(actions[:,-1]), actions[:,-1]),torch.ones_like(actions[:,-1]) * desired_gripper_effort)/desired_gripper_effort
-    # )
-    caging = hamacher_product(y_caging, x_z_caging)
+#     # Closed-extent gripper information for caging reward-------------
+#     # gripper_closed = (
+#     #     torch.minimum(torch.maximum(torch.zeros_like(actions[:,-1]), actions[:,-1]),torch.ones_like(actions[:,-1]) * desired_gripper_effort)/desired_gripper_effort
+#     # )
+#     caging = hamacher_product(y_caging, x_z_caging)
 
-    gripping = torch.where(caging > 0.95,y_gripping,0)
+#     gripping = torch.where(caging > 0.95,y_gripping,0)
 
-    caging_and_gripping = (caging + gripping) / 2
+#     caging_and_gripping = (caging + gripping) / 2
 
-    return caging_and_gripping
+#     return caging_and_gripping
 
 from isaacgymenvs.tasks.reward_utils import _gripper_caging_reward as default_gripper_caging_reward
 

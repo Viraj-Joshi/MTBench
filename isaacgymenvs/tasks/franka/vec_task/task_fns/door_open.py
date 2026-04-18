@@ -8,7 +8,7 @@ from gym import spaces
 
 from isaacgym import gymutil, gymtorch, gymapi
 from isaacgymenvs.utils.torch_jit_utils import to_torch
-from isaacgymenvs.tasks.reward_utils import _gripper_caging_reward, tolerance, hamacher_product
+from isaacgymenvs.tasks.reward_utils import tolerance, hamacher_product, _sigmoids
 from isaacgymenvs.utils.torch_jit_utils import tensor_clamp, to_torch
 
 
@@ -149,7 +149,7 @@ def compute_observations(env, env_ids):
     door_dof_pos_idx = self.franka_dof_start_idx[env_ids] + self.num_franka_dofs
     door_dof_pos = self.dof_state[door_dof_pos_idx, 0]
 
-    self.specialized_kwargs['door_open'][env_ids[0].item()] = {'door_dof_pos': door_dof_pos}
+    self.specialized_kwargs['door_open']['door_dof_pos'] = door_dof_pos
   
     return torch.cat([
         door_pos,
@@ -158,7 +158,6 @@ def compute_observations(env, env_ids):
         torch.zeros_like(door_pos),
         torch.zeros_like(door_rot),
     ], dim=-1)
-
 
 @torch.jit.script
 def compute_reward(

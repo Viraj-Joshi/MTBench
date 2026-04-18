@@ -67,11 +67,11 @@ def create_envs(
     
     # ---------------------- Define goals ----------------------
     # obj is used by cylinder, goal for target pos
-    obj_low = (0, -.05, self._table_surface_pos[2]+cylinder_height/2)
-    obj_high = (.05, .05, self._table_surface_pos[2]+cylinder_height/2)
+    obj_low = (-.05, -.05, self._table_surface_pos[2]+cylinder_height/2)
+    obj_high = (0, .05, self._table_surface_pos[2]+cylinder_height/2)
 
-    goal_low =  (.25, -.05, self._table_surface_pos[2] + .05)
-    goal_high = (.30,  .05, self._table_surface_pos[2] + .30)
+    goal_low =  (.19, -.05, self._table_surface_pos[2] + .05) # modified from meta-world in x due to franka reach limitation (cannot reach beyond .27)
+    goal_high = (.23,  .05, self._table_surface_pos[2] + .25)
 
     # goal_space = spaces.Box(np.array(goal_low),np.array(goal_high))
     random_reset_space = spaces.Box(
@@ -138,16 +138,6 @@ def compute_observations(env, env_ids):
     multi_env_ids_int32 = (self.franka_actor_idx[env_ids]+2).flatten().to(dtype=torch.int32)
     wall_pos = self.root_state_tensor[multi_env_ids_int32,:3]
     wall_rot = self.root_state_tensor[multi_env_ids_int32,3:7]
-
-    # meta-world uses +.25 as the z value for the midpoint
-    # but this is unnessarily high to bypass the wall, so we lower this requirement
-    # this speeds up learning
-    self.specialized_kwargs['pick_place_wall'][env_ids[0].item()]['midpoint'] = \
-        (self.obj_init_pos[env_ids[0], :3] + self.target_pos[env_ids[0], :3]) / 2
-    # self.specialized_kwargs['pick_place_wall'][env_ids[0].item()]['midpoint'][:,2] = (self.target_pos[0,2] - self.table_surface_pos[2]) / 2 + self.table_surface_pos[2]
-    self.specialized_kwargs['pick_place_wall'][env_ids[0].item()]['midpoint'][0] = .17
-    # self.specialized_kwargs['pick_place_wall'][env_ids[0].item()]['midpoint'][1] += .075
-    self.specialized_kwargs['pick_place_wall'][env_ids[0].item()]['midpoint'][2] = self.target_pos[0,2]
     
     return torch.cat([
         obj_pos,
@@ -160,40 +150,19 @@ def compute_observations(env, env_ids):
 @torch.jit.script
 def compute_reward(
         reset_buf: torch.Tensor, progress_buf: torch.Tensor, actions: torch.Tensor, franka_dof_pos: torch.Tensor,
-        franka_lfinger_pos: torch.Tensor, franka_rfinger_pos: torch.Tensor, max_episode_length: float, 
+        franka_lfinger_pos: torch.Tensor, franka_rfinger_pos: torch.Tensor, max_episode_length: float,
         tcp_init: torch.Tensor, target_pos: torch.Tensor, obj: torch.Tensor, obj_init_pos: torch.Tensor, specialized_kwargs: Dict[str,torch.Tensor]
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
     TARGET_RADIUS = 0.05
-    in_place_scaling = specialized_kwargs["in_place_scaling"]
-    midpoint = specialized_kwargs["midpoint"] 
 
     tcp = (franka_lfinger_pos + franka_rfinger_pos) / 2
-    tcp_to_obj = torch.norm(obj - tcp,dim=-1)
+    obj_to_target = torch.norm(obj - target_pos, dim=-1)
+    tcp_to_obj = torch.norm(obj - tcp, dim=-1)
 
-    obj_to_midpoint = torch.norm((obj - midpoint),dim=-1)
-    obj_to_midpoint_init = torch.norm((obj_init_pos - midpoint),dim=-1)
-
-    obj_to_target = torch.norm((obj - target_pos) * in_place_scaling,dim=-1)
-    obj_to_target_init = torch.norm((obj_init_pos - target_pos) * in_place_scaling,dim=-1)
-
-    in_place_part1  = tolerance(
-        obj_to_midpoint,
-        bounds=(0.0, TARGET_RADIUS),
-        margin=obj_to_midpoint_init,
-        sigmoid="long_tail",
-    )
-
-    in_place_part2  = tolerance(
-        obj_to_target,
-        bounds=(0.0, TARGET_RADIUS),
-        margin=obj_to_target_init,
-        sigmoid="long_tail",
-    )
-
-    # create a normalized 0 to 1 measurement of how open the gripper is, where 1 is fully open and 0 is fully closed
-    gripper_distance_apart = torch.norm(franka_rfinger_pos-franka_lfinger_pos,dim=-1)
-    tcp_opened = torch.clip(gripper_distance_apart/.095,0.0,1.0)
+    finger1_dof = franka_dof_pos[:, -2]
+    finger2_dof = -franka_dof_pos[:, -1]
+    tcp_opened = (finger1_dof - finger2_dof) / .08
 
     object_grasped = _gripper_caging_reward(
         obj,
@@ -210,26 +179,55 @@ def compute_reward(
         medium_density=True
     )
 
-    in_place_and_object_grasped = hamacher_product(
-        object_grasped, in_place_part1
-    )
+    past_wall = obj[:, 0] >= 0.15
 
-    rewards = torch.where((tcp_to_obj < .02) & (tcp_opened > 0) & ((obj[:,2] - .015) > obj_init_pos[:,2]),
-                            in_place_and_object_grasped + 1.0 + 4.0 * in_place_part1, 
-                            in_place_and_object_grasped)
-    
-    rewards = torch.where((tcp_to_obj < .02) & (tcp_opened > 0) & ((obj[:,2] - .015) > obj_init_pos[:,2]) & (obj[:,0]>=.17),
-                             1.0 + 1.0 + 4.0 + 3.0 * in_place_part2, # not reaching this reward
-                             rewards) * .01
-    
-    # calculate success without scaling
-    success = (obj_to_target) < .08 # meta world calculates success with a more lax threshold
-    rewards = torch.where((obj_to_target) < TARGET_RADIUS, 10, rewards)
+    # Safe wall clearance height
+    wall_clear_z = obj_init_pos[:, 2] + 0.25
 
-    # Compute reset
-    reset_buf = torch.where(success | (progress_buf >= max_episode_length - 1), torch.ones_like(reset_buf), reset_buf)
+    # The target's Z height dynamically raises up to clear the wall based on X progress
+    peak_x = 0.12  # peak just before the wall (0.15) to ensure maximum height during crossing
+    dx = torch.abs(obj[:, 0] - peak_x)
+    
+    # A Gaussian bump in Z height centered around the wall. 
+    # At the wall, target Z = wall_clear_z. Far from wall, target Z = real target_z.
+    z_bump = torch.clamp(wall_clear_z - target_pos[:, 2], min=0.0)
+    dynamic_targ_z = target_pos[:, 2] + z_bump * torch.exp(-40.0 * dx**2)
+    
+    dynamic_target = target_pos.clone()
+    dynamic_target[:, 2] = dynamic_targ_z
+
+    # Distance is simply the L2 norm to the dynamic target
+    path_dist = torch.norm(obj - dynamic_target, dim=-1)
+
+    # Initial distance (with dynamic target starting near its peak due to starting position)
+    init_dx = torch.abs(obj_init_pos[:, 0] - peak_x)
+    init_dynamic_targ_z = target_pos[:, 2] + z_bump * torch.exp(-40.0 * init_dx**2)
+    init_dynamic_target = target_pos.clone()
+    init_dynamic_target[:, 2] = init_dynamic_targ_z
+    init_path_dist = torch.norm(obj_init_pos - init_dynamic_target, dim=-1)
+
+    in_place = tolerance(path_dist, bounds=(0.0, TARGET_RADIUS), margin=init_path_dist, sigmoid="long_tail")
+
+    lifted = (tcp_to_obj < 0.04) & (tcp_opened > 0) & ((obj[:, 2] - .01) > obj_init_pos[:, 2])
+
+    # Base lifting bonus (active everywhere)
+    height_bonus = torch.clamp((obj[:, 2] - obj_init_pos[:, 2]) / 0.06, 0.0, 1.0)
+
+    rewards = object_grasped
+    rewards = torch.where(
+        lifted,
+        object_grasped + 1.0 + 3.0 * height_bonus + 5.0 * in_place,
+        rewards
+    ) * .01
+
+    success = obj_to_target < TARGET_RADIUS
+    rewards = torch.where(success, 50.0, rewards)
+
+    # Compute resets
+    reset_buf = torch.where((progress_buf >= max_episode_length - 1) | success, torch.ones_like(reset_buf), reset_buf)
 
     return rewards, reset_buf, success
+
 
 def reset_env(env, tid, env_ids, random_reset_space):
     self = env
