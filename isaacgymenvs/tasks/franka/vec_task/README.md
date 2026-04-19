@@ -7,7 +7,7 @@ Here are the differences with the original Meta-World. In general, most reward f
 | assembly | peg is fixed to table to make task easier|
 | basketball | basketball is a box because IsaacGym has a physics issue with sphere|
 | bin_picking | |
-| box_close | |
+| box_close | | top lid placed -.05 in x from original implementation to give space to lift lid without hitting base|
 | button_press_topdown | |
 | button_press_topdown_wall | |
 | button_press | |

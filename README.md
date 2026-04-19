@@ -6,16 +6,15 @@ Multi-task Reinforcement Learning (MTRL) has emerged as a critical training para
 
 ## Updates
 
-* [April 19, 2026] Update reward functions of 7 tasks previously stuck at 0% success to
-    * Assembly: ~100% success (100M frames).
-    * Disassembly: ~97% success (150M frames).
-    * Stick Pull: ~90% success (200M frames).
+* [April 19, 2026] Update reward functions of 8 tasks previously stuck at 0% success to
+    * Assembly: ~99% success (100M frames)
+    * Box Close: ~99% success (100M frames)
+    * Disassembly: ~97% success (150M frames)
+    * Stick Pull: ~90% success (200M frames)
     * Stick Push: ~95% (200M frames)
-    * Pick Place Wall: ~85% success (100M frames).
+    * Pick Place Wall: ~85% success (100M frames)
     * Push Wall: ~95% (200M frames)
     * Shelf Place: ~95% (150M frames)
-
-    The only remaining task that needs a reward function revision is box close, which currently has ~0% success rate
 * [March 25, 2026] 
     * Update the reward function for Meta-World Door Open task to be solvable at 100% success with PPO. Changing this reward function has invalidated results from the paper, so if you use this, be sure to re-run your baselines!
     * Removed wandb_utils.py from gitignore. 
@@ -39,7 +38,7 @@ pip install "wandb<0.16.0"
 pip install skrl
 pip install moviepy
 ```
-Don't skip downgrading wandb, otherwise the wandb plots will be nonsensical in the x-axis and warnings of resuming past runs.
+Don't skip downgrading wandb, otherwise the wandb plots will be nonsensical in the x-axis and output warnings of resuming past runs.
 
 ## Basic Structure
 ```

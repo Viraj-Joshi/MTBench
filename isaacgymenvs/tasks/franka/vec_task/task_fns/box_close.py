@@ -73,11 +73,14 @@ def create_envs(
     
     # ---------------------- Define goals ----------------------
     # obj is used by box_top, goal for target pos and box_base
-    obj_low =  (-0.15, -0.05, self._table_surface_pos[2]) # moved -.05 in x
-    obj_high = (-0.10,  0.05, self._table_surface_pos[2]) # moved -.05 in x
+    obj_low =  (-0.15, -0.05, self._table_surface_pos[2])
+    obj_high = (-0.10,  0.05, self._table_surface_pos[2])
 
-    goal_low =  (.15, -.10, self._table_surface_pos[2] + .133)
-    goal_high = (.25,  .10, self._table_surface_pos[2] + .133)
+    # z matches where lid_base (top_link) sits when the lid rests on the box
+    # walls: box wall top is at table + 0.06 and the lid's bottom rim extends
+    # 0.016 below top_link, so seated top_link_z = table_surface + 0.076.
+    goal_low =  (.15, -.10, self._table_surface_pos[2] + .076)
+    goal_high = (.25,  .10, self._table_surface_pos[2] + .076)
 
     # goal_space = spaces.Box(np.array(goal_low),np.array(goal_high))
     random_reset_space = spaces.Box(
@@ -148,19 +151,11 @@ def compute_observations(env, env_ids):
     obj_pos = obj_rigid_body_states[:, 0:3] - to_torch([0,0,.01],device=self.device)
     obj_rot = obj_rigid_body_states[:, 3:7]
 
-    self.specialized_kwargs['box_close']['lid_base_pos'] = lid_base_rigid_body_states[:, 0:3]
-    self.specialized_kwargs['box_close']['obj_rot'] = obj_rot
-
     multi_env_ids_int32 = (self.franka_actor_idx[env_ids]+2).flatten().to(dtype=torch.int32)
     box_base_pos = self.root_state_tensor[multi_env_ids_int32,:3]
     box_base_quat = self.root_state_tensor[multi_env_ids_int32,3:7]
 
-    # print('obj_pos: ', obj_pos[0])
-    # print('lid_base_pos: ', lid_base_rigid_body_states[0, 0:3])
-    # print('distance 1: ', torch.norm(self.target_pos  - obj_pos,dim=-1)[0])
-    # print('distance 2: ', torch.norm(self.target_pos - lid_base_rigid_body_states[:, 0:3],dim=-1)[0])
-    # print('obj_init_pos: ', self.obj_init_pos[0])
-    # print('target pos: ', self.target_pos[0])
+    self.specialized_kwargs['box_close']['lid_base_pos'] = lid_base_rigid_body_states[:, 0:3]
 
     return torch.cat([
         obj_pos,
@@ -181,65 +176,55 @@ def _reward_quat(obj_rot: torch.Tensor) -> torch.Tensor:
 @torch.jit.script
 def compute_reward(
     reset_buf: torch.Tensor, progress_buf: torch.Tensor, actions: torch.Tensor, franka_dof_pos: torch.Tensor,
-    franka_lfinger_pos: torch.Tensor, franka_rfinger_pos: torch.Tensor, max_episode_length: float, 
+    franka_lfinger_pos: torch.Tensor, franka_rfinger_pos: torch.Tensor, max_episode_length: float,
     tcp_init: torch.Tensor, target_pos: torch.Tensor, lid: torch.Tensor, obj_init_pos: torch.Tensor, specialized_kwargs: Dict[str,torch.Tensor]
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
-    TABLE_Z = 1.0270
-    z_offset = TABLE_Z + .106
-    error_scale = specialized_kwargs["error_scale"]
     lid_base_pos = specialized_kwargs["lid_base_pos"]
-    obj_rot = specialized_kwargs["obj_rot"]
 
     tcp = (franka_lfinger_pos + franka_rfinger_pos) / 2
+    tcp_to_lid = torch.norm(tcp - lid, dim=-1)
 
-    threshold = 0.02
-    # floor is a 3D funnel centered on the initial object pos
-    radius = torch.norm(tcp[:,:2] - lid[:,:2],dim=-1)
-    # whatever is added to the log term controls where the funnel starts
-    floor = torch.where(radius <= threshold, TABLE_Z, .04 * torch.log(radius - threshold) + (TABLE_Z+.4))
-
-    above_floor_tolerance_margin = torch.where(floor < 0, 0, floor/2.0)
-    above_floor_tolerance = tolerance(
-        torch.maximum(floor - tcp[:,2], torch.zeros_like(floor)),
-        bounds = (0.0,0.01),
-        margin = above_floor_tolerance_margin,
-        sigmoid = "long_tail"
+    # Cage the lid's handle between the gripper fingers.
+    object_grasped = _gripper_caging_reward(
+        lid,
+        franka_lfinger_pos,
+        franka_rfinger_pos,
+        tcp,
+        tcp_init,
+        actions,
+        obj_init_pos,
+        object_reach_radius=0.01,
+        obj_radius=0.02,
+        pad_success_thresh=0.05,
+        xz_thresh=0.005,
+        medium_density=True,
     )
 
-    # prevent the hand from running into the handle prematurely by keeping
-    # it above the "floor"
-    above_floor = torch.where(tcp[:,2] >= floor, 1.0, above_floor_tolerance)
-
-    tcp_to_lid =  torch.norm(tcp - lid, dim=-1)
-    # grab the lid's handle
+    # Place lid_base (the lid's base frame, which actually seats on the box)
+    # onto target_pos.
+    lid_base_to_target = torch.norm(lid_base_pos - target_pos, dim=-1)
+    in_place_margin = torch.norm(obj_init_pos - target_pos, dim=-1)
     in_place = tolerance(
-        tcp_to_lid,
+        lid_base_to_target,
         bounds=(0.0, 0.02),
-        margin = torch.ones_like(tcp_to_lid) * 0.5,
+        margin=in_place_margin,
         sigmoid="long_tail",
     )
 
-    reward_grab = (torch.clip(actions[:,3], -1, 1) + 1.0) / 2.0
+    # Gripper openness: 1 ≈ fully open, 0 ≈ fully closed.
+    finger1_dof = franka_dof_pos[:, -2]
+    finger2_dof = -franka_dof_pos[:, -1]
+    tcp_opened = (finger1_dof - finger2_dof) / .08
 
-    ready_to_lift = hamacher_product(above_floor, in_place)
-    
-    pos_error = torch.norm((target_pos - lid) * error_scale, dim=-1)
-    a = .2  # Relative importance of just *trying* to lift the lid at all
-    b = .8  # Relative importance of placing the lid on the box
-    lifted = a * (lid[:,2] > (z_offset)) + b * tolerance( # metaworld uses table_surface_height + .04, but the lid is already above that at the initial state, so change to +.106
-        pos_error,
-        bounds=(0.0, 0.05),
-        margin=torch.ones_like(pos_error) * .25,
-        sigmoid="long_tail",
-    )
+    in_place_and_grasped = hamacher_product(object_grasped, in_place)
+    rewards = in_place_and_grasped
 
-    # gripper_distance_apart = torch.norm(franka_rfinger_pos-franka_lfinger_pos,dim=-1)
-    # tcp_closed = 1 - torch.clip(gripper_distance_apart/.095,0.0,1.0)
+    # Big bonus only when the handle is caged AND the lid is off the table.
+    lifted_mask = (tcp_to_lid < 0.02) & (tcp_opened > 0) & ((lid[:, 2] - 0.01) > obj_init_pos[:, 2])
+    rewards = torch.where(lifted_mask, rewards + 1.0 + 5.0 * in_place, rewards) * 0.01
 
-    rewards = (2.0 * hamacher_product(reward_grab, ready_to_lift) + 8.0 * lifted)*.01
-
-    success = (torch.norm(lid_base_pos - target_pos, dim=-1) < 0.08)
+    success = lid_base_to_target < 0.05
     rewards = torch.where(success, 10, rewards)
 
     # Compute resets

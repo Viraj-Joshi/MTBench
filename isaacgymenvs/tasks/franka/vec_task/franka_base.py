@@ -773,8 +773,6 @@ class FrankaBaseEnvV2(VecTask):
             task_name = self.task_idx2name[tid]
             if task_name == 'basketball':
                 self.specialized_kwargs[task_name]['scale'] = to_torch([1.0, 1.0, 1.0], device=self.device)
-            elif task_name == 'box_close':
-                self.specialized_kwargs[task_name]['error_scale'] = to_torch([1.0, 1.0, 3.0], device=self.device)
             elif task_name == 'coffee_pull':
                 self.specialized_kwargs[task_name]['scale'] = to_torch([2.0, 2.0, 1.0],device=self.device)
             elif task_name == 'coffee_push':
