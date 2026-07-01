@@ -1,0 +1,110 @@
+# FAMO multi-task PPO with the (shared/asymmetric) recurrent LSTM recipe.
+#
+# Identical network to allegro-kuka-vanilla-lstm-PPO (LSTM-before-MLP,
+# critic [768,512,256]); the only change is the multi-task gradient method: the
+# `famo_a2c` agent reweights the per-task CRITIC loss via FAMO instead of a plain mean.
+#
+# NOTE: FAMO requires every minibatch to contain all tasks (it asserts on this). With
+# a recurrent critic this is only true because prepare_dataset shuffles whole sequences
+# (mixing tasks into every minibatch) -- see mt_a2c_agent.prepare_dataset.
+params:
+  seed: ${...seed}
+  algo:
+    name: famo_a2c
+
+  model:
+    name: mt_continuous_a2c_logstd
+
+  network:
+    name: asymmetric_a2c
+    separate: True
+
+    space:
+      continuous:
+        mu_activation: None
+        sigma_activation: None
+        mu_init:
+          name: default
+        sigma_init:
+          name: const_initializer
+          val: 0
+        fixed_sigma: True
+    actor:
+      units: [768, 512, 256]
+      activation: elu
+      d2rl: False
+
+      initializer:
+        name: default
+      regularizer:
+        name: None
+    critic:
+      units: [768, 512, 256]
+      activation: elu
+      d2rl: False
+
+      initializer:
+        name: default
+      regularizer:
+        name: None
+      # LSTM before the MLP
+      rnn:
+        name: lstm
+        units: 768
+        layers: 1
+        before_mlp: True
+        layer_norm: True
+
+  load_checkpoint: ${if:${...checkpoint},True,False} # flag which sets whether to load the checkpoint
+  load_path: ${...checkpoint} # path to the checkpoint to load
+
+  config:
+    name: ${resolve_default:famo_ppo,${....experiment}}
+    full_experiment_name: ${.name}
+    env_name: rlgpu
+    multi_gpu: ${....multi_gpu}
+    ppo: True
+    mixed_precision: False   # FAMO runs two backward passes per update; keep AMP off
+    value_bootstrap: True
+
+    learn_task_embedding: ${....learn_task_embedding}
+    task_embedding_dim: 32
+
+    normalize_input: True
+    normalize_value: True
+    normalize_reward: False
+    normalize_advantage: True
+
+    num_actors: ${....task.env.numEnvs}
+    reward_shaper:
+      scale_value: 1.0
+    gamma: 0.99
+    tau: 0.95
+    learning_rate: 5e-4
+    lr_schedule: adaptive
+    schedule_type: standard
+    kl_threshold: 0.016
+    score_to_win: 2e10
+    max_epochs: ${resolve_default:3000,${....max_iterations}}
+    save_best_after: 500
+    save_frequency: 20000
+    print_stats: True
+    grad_norm: 1.0
+    entropy_coef: 0
+    truncate_grads: True
+    e_clip: 0.2
+    horizon_length: 16
+    minibatch_size: 16384
+    mini_epochs: 2
+    critic_coef: 4
+    clip_value: True
+    seq_length: 16          # BPTT window for the recurrent critic (must divide horizon_length)
+    bounds_loss_coef: 0.0001
+    shuffle_data: True
+
+    # FAMO: reweights the per-task critic loss (see FAMOA2CAgent)
+    famo:
+      gamma: 1e-3      # regularization coefficient (weight decay on the task logits)
+      w_lr: 1e-3       # learning rate of the task logits
+      epsilon: 1e-2    # clipping epsilon for the task logits
+      norm_w_grad: True

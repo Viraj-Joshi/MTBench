@@ -1,0 +1,104 @@
+# Asymmetric actor/critic PPO with a recurrent (LSTM) critic.
+#
+# Same as meta-world-mt10-vanilla-asymmetric-PPO, but the critic gets a 1-layer
+# 768-unit LSTM placed BEFORE its MLP (SAPG-style `before_mlp: True`), while the
+# actor stays feedforward. This mirrors SAPG's AllegroKukaLSTMPPO recurrence
+# (lstm/768/1/layer_norm) applied to the (larger) critic only.
+#
+# Recurrence is driven entirely by the optional `network.critic.rnn` block, which
+# isaacgymenvs/learning/networks/asymmetric_a2c_builder.py reads; drop that block
+# to fall back to a feedforward critic.
+params:
+  seed: ${...seed}
+  algo:
+    name: mt_a2c_continuous
+
+  model:
+    name: mt_continuous_a2c_logstd
+
+  network:
+    name: asymmetric_a2c
+    separate: True
+
+    space:
+      continuous:
+        mu_activation: None
+        sigma_activation: None
+        mu_init:
+          name: default
+        sigma_init:
+          name: const_initializer
+          val: 0
+        fixed_sigma: True
+    actor:
+      units: [768, 512, 256]          # what is used when separate is False, oops!
+      activation: elu
+      d2rl: False
+
+      initializer:
+        name: default
+      regularizer:
+        name: None
+    critic:
+      units: [768, 512, 256]
+      activation: elu
+      d2rl: False
+
+      initializer:
+        name: default
+      regularizer:
+        name: None
+      # LSTM before the MLP
+      rnn:
+        name: lstm
+        units: 768
+        layers: 1
+        before_mlp: True
+        layer_norm: True
+
+  load_checkpoint: ${if:${...checkpoint},True,False} # flag which sets whether to load the checkpoint
+  load_path: ${...checkpoint} # path to the checkpoint to load
+
+  config:
+    name: ${resolve_default:mt_ppo,${....experiment}}
+    full_experiment_name: ${.name}
+    env_name: rlgpu
+    multi_gpu: ${....multi_gpu}
+    ppo: True
+    mixed_precision: True
+    value_bootstrap: True
+
+    learn_task_embedding: ${....learn_task_embedding}
+    task_embedding_dim: 32
+
+    normalize_input: True
+    normalize_value: True
+    normalize_reward: False
+    normalize_advantage: True
+
+    num_actors: ${....task.env.numEnvs}
+    reward_shaper:
+      scale_value: 1.0
+    gamma: 0.99
+    tau: 0.95
+    learning_rate: 5e-4
+    lr_schedule: adaptive
+    schedule_type: standard
+    kl_threshold: 0.016
+    score_to_win: 2e10
+    max_epochs: ${resolve_default:3000,${....max_iterations}}
+    save_best_after: 500
+    save_frequency: 20000
+    print_stats: True
+    grad_norm: 1.0
+    entropy_coef: 0
+    truncate_grads: True
+    e_clip: 0.2
+    horizon_length: 16
+    minibatch_size: 16384
+    mini_epochs: 2
+    critic_coef: 4
+    clip_value: True
+    seq_length: 16          # BPTT window for the recurrent critic (must divide horizon_length)
+    bounds_loss_coef: 0.0001
+    shuffle_data: True

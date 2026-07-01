@@ -235,7 +235,22 @@ class MTA2CAgent(A2CAgent):
         task_indices = self.vec_env.env.extras["task_indices"]
         arr = task_indices.unsqueeze(0).expand(self.horizon_length, -1)
         s = arr.size()
-        batch_dict["task_indices"] = arr.transpose(0, 1).reshape(s[0] * s[1], *s[2:]) 
+        batch_dict["task_indices"] = arr.transpose(0, 1).reshape(s[0] * s[1], *s[2:])
+        return batch_dict
+
+    def play_steps_rnn(self):
+        # recurrent rollout. We reuse rl_games' play_steps_rnn (which manages the per-sequence
+        # rnn state buffers and zero-on-done resets, and calls our task-aware get_action_values /
+        # env_step) and only append the per-env task indices, flattened to match swap_and_flatten01
+        # (env-major) exactly like the feedforward play_steps above.
+        assert not self.normalize_reward, (
+            "Per-task reward normalization is not yet supported with a recurrent (RNN) critic"
+        )
+        batch_dict = super().play_steps_rnn()
+        task_indices = self.vec_env.env.extras["task_indices"]
+        arr = task_indices.unsqueeze(0).expand(self.horizon_length, -1)
+        s = arr.size()
+        batch_dict["task_indices"] = arr.transpose(0, 1).reshape(s[0] * s[1], *s[2:])
         return batch_dict
     
     def prepare_dataset(self, batch_dict):
@@ -264,7 +279,7 @@ class MTA2CAgent(A2CAgent):
         advantages = torch.sum(advantages, axis=1)
 
         if self.normalize_advantage:
-            if self.is_rnn:
+            if self.is_rnn and rnn_masks is not None:
                 if self.normalize_rms_advantage:
                     advantages = self.advantage_mean_std(advantages, mask=rnn_masks)
                 else:
@@ -280,8 +295,27 @@ class MTA2CAgent(A2CAgent):
                         mean, std = advantages.mean(), advantages.std()
                     advantages = (advantages - mean) / (std + 1e-8)
 
-        # shuffle before adding to the dataset
-        if self.shuffle_data:
+        # shuffle before adding to the dataset.
+        #  - feedforward: shuffle per transition.
+        #  - RNN: shuffle at the SEQUENCE granularity. The PPODataset forms each minibatch from a
+        #    contiguous slice of sequences, so with contiguous per-task env blocks an unshuffled
+        #    batch yields single-task minibatches -> the shared trunk catastrophically interferes
+        #    across tasks (8 task-0 steps, then 8 task-1, ...). Permuting whole sequences mixes
+        #    tasks in every minibatch while keeping each sequence's timesteps contiguous (required
+        #    for BPTT) and its per-sequence rnn_state aligned.
+        rnn_states_out = rnn_states
+        if self.is_rnn:
+            if self.shuffle_data and rnn_states is not None:
+                num_seqs = len(advantages) // self.seq_length
+                seq_perm = torch.randperm(num_seqs, device=advantages.device)
+                perm = (
+                    seq_perm.unsqueeze(1) * self.seq_length
+                    + torch.arange(self.seq_length, device=advantages.device)
+                ).view(-1)
+                rnn_states_out = [s[:, seq_perm].contiguous() for s in rnn_states]
+            else:
+                perm = torch.arange(len(advantages), device=advantages.device)
+        elif self.shuffle_data:
             perm = torch.randperm(len(advantages))
         else:
             perm = torch.arange(len(advantages))
@@ -293,7 +327,9 @@ class MTA2CAgent(A2CAgent):
         dataset_dict['actions'] = actions[perm]
         dataset_dict['obs'] = obses[perm]
         dataset_dict['dones'] = dones[perm]
-        dataset_dict['rnn_states'] = rnn_states[perm] if rnn_states is not None else None
+        # rnn_states: a list of per-sequence state tensors [num_layers, num_seqs, units],
+        # reordered by the same sequence permutation as the transitions above.
+        dataset_dict['rnn_states'] = rnn_states_out
         dataset_dict['rnn_masks'] = rnn_masks[perm] if rnn_masks is not None else None
         dataset_dict['mu'] = mus[perm]
         dataset_dict['sigma'] = sigmas[perm]
@@ -405,10 +441,17 @@ class MTA2CAgent(A2CAgent):
 
         batch_dict = {
             'is_train': True,
-            'prev_actions': actions_batch, 
+            'prev_actions': actions_batch,
             'obs' : obs_batch,
             'task_indices': task_indices
-        }        
+        }
+
+        if self.is_rnn:
+            # feed the recurrent critic its per-sequence states + the BPTT window so it can
+            # unroll over the sequence (and reset on dones) during the update
+            batch_dict['rnn_states'] = input_dict['rnn_states']
+            batch_dict['dones'] = input_dict['dones']
+            batch_dict['seq_length'] = self.seq_length
 
         with torch.cuda.amp.autocast(enabled=self.mixed_precision):
             res_dict = self.model(batch_dict)
@@ -518,7 +561,7 @@ class MTA2CAgent(A2CAgent):
 
             # Step the evaluation environment
             obs, rewards, self.dones, infos = self.env_step(actions)
-            if 'episode' in infos:
+            if 'episode' in infos and 'success' in infos['episode']:
                 success = infos['episode']['success']
             else:
                 success = torch.zeros_like(episode_successes)
@@ -836,17 +879,23 @@ class FAMOA2CAgent(MTA2CAgent):
         b_loss: torch.Tensor,
         task_indices: torch.Tensor,
     ):
-        loss = a_loss - entropy * self.entropy_coef + b_loss * self.bounds_loss_coef
-        self.scaler.scale(loss.mean()).backward()
-
         tids = torch.unique(task_indices)
         assert len(tids) == self.n_tasks, "Current batch does not contains all the tasks, it has only {}".format(tids)
         c_losses = []
         for tid in tids:
             mask = task_indices == tid
             c_losses.append((c_loss[mask].mean()) * 0.5 * self.critic_coef)
-        c_loss = self.get_weighted_loss(losses=torch.stack(c_losses))
-        self.scaler.scale(c_loss).backward()
+        weighted_c_loss = self.get_weighted_loss(losses=torch.stack(c_losses))
+
+        # Single combined backward. The original code split this into two .backward() calls
+        # (actor, then the FAMO-weighted critic), which fails when the actor and critic share a
+        # trunk (network.separate=False): the first backward frees the shared graph so the second
+        # raises "backward through the graph a second time". Summing the two scalar losses and
+        # backpropagating once is mathematically identical (grad of a sum = sum of grads, which is
+        # exactly what the two accumulating backwards produced) and works for shared OR separate
+        # trunks, so it leaves existing separate=True FAMO runs unchanged.
+        actor_loss = (a_loss - entropy * self.entropy_coef + b_loss * self.bounds_loss_coef).mean()
+        self.scaler.scale(actor_loss + weighted_c_loss).backward()
 
     def calc_gradients(self, input_dict):
         super().calc_gradients(input_dict)

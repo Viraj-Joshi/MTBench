@@ -99,6 +99,7 @@ def launch_rlg_hydra(cfg: DictConfig):
     from isaacgymenvs.learning import pqn_agent
     from isaacgymenvs.learning import grpo_agent
     from isaacgymenvs.learning import td3_agent 
+    from isaacgymenvs.learning import sapg_agent
 
     from isaacgymenvs.learning.networks import soft_modularization_sac_builder
     from isaacgymenvs.learning.networks import soft_modularization_a2c_builder
@@ -232,6 +233,7 @@ def launch_rlg_hydra(cfg: DictConfig):
         runner.algo_factory.register_builder('mt_sac_soft_modularization', lambda **kwargs : mt_sac_agent.MTSACSoftModularizationAgent(**kwargs))
         runner.algo_factory.register_builder('fast_td3', lambda **kwargs : td3_agent.FastTD3Agent(**kwargs))
         runner.algo_factory.register_builder('mt_fast_td3', lambda **kwargs : td3_agent.MTFastTD3Agent(**kwargs))
+        runner.algo_factory.register_builder('sapg_a2c', lambda **kwargs : sapg_agent.SAPGA2CAgent(**kwargs))
 
         model_builder.register_model('mt_continuous_a2c_logstd', lambda network, **kwargs : mt_models.MTModelA2CContinuousLogStd(network))
         model_builder.register_model('mt_continuous_grpo_logstd', lambda network, **kwargs : mt_models.MTModelGRPOContinuousLogStd(network))

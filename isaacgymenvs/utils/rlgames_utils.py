@@ -185,6 +185,22 @@ class RLGPUAlgoObserver(AlgoObserver):
                 if isinstance(v, float) or isinstance(v, int) or (isinstance(v, torch.Tensor) and len(v.shape) == 0):
                     self.direct_info[k] = v
 
+        # SAPG-style per-env-tensor metrics (e.g. AllegroKuka consecutive successes).
+        # These are [num_envs] tensors, so the scalar filter above drops them; reduce
+        # them here, matching SAPG's metric names so the curves line up with theirs.
+        for tag in ('successes', 'closest_keypoint_max_dist'):
+            v = infos.get(tag, None)
+            if isinstance(v, torch.Tensor) and v.numel() > 0:
+                v = v.float()
+                self.direct_info[tag] = v.mean().item()
+                self.direct_info[f'{tag}_median'] = torch.median(v).item()
+                self.direct_info[f'{tag}_max'] = v.max().item()
+        true_objective = infos.get('true_objective', None)
+        if isinstance(true_objective, torch.Tensor) and true_objective.numel() > 0:
+            true_objective = true_objective.float()
+            self.direct_info['true_objective_mean'] = true_objective.mean().item()
+            self.direct_info['true_objective_max'] = true_objective.max().item()
+
     def after_print_stats(self, frame, epoch_num, total_time):
         if self.ep_infos:
             all_keys = set()
@@ -214,9 +230,9 @@ class RLGPUAlgoObserver(AlgoObserver):
             self.new_finished_episodes = False
 
         for k, v in self.direct_info.items():
+            # only log against frames; the /iter and /time variants were the same series
+            # on different x-axes and just cluttered wandb.
             self.writer.add_scalar(f'{k}/frame', v, frame)
-            self.writer.add_scalar(f'{k}/iter', v, epoch_num)
-            self.writer.add_scalar(f'{k}/time', v, total_time)
 
 
 class VisualRLGPUAlgoObserver(RLGPUAlgoObserver):

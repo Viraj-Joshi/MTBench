@@ -17,37 +17,41 @@ from rl_games.algos_torch.models import BaseModelNetwork
     def forward(self, input, task_id, denorm=False, mask=None): """
 
 class MTModelNetwork(nn.Module):
-    def __init__(self, obs_shape, normalize_value, normalize_input, value_size, task_embedding_dim):
+    def __init__(self, obs_shape, normalize_value, normalize_input, value_size, task_embedding_dim, num_policies=0):
         nn.Module.__init__(self)
-        
-        obs_dim = obs_shape[0]  # true obs dim + task embedding dim
+
+        obs_dim = obs_shape[0]  # true obs dim + task embedding dim (+ policy one-hot for SAPG)
         self.normalize_value = normalize_value
         self.normalize_input = normalize_input
         self.value_size = value_size
-        self.task_embedding_dim = task_embedding_dim # is also equivalent to the number of tasks when using a one-hot encoding
+        self.task_embedding_dim = task_embedding_dim
+        self.num_policies = num_policies
 
-        self.true_obs_dim = obs_dim - self.task_embedding_dim
+        self.true_obs_dim = obs_dim - self.task_embedding_dim - self.num_policies
         if normalize_value:
-            self.value_mean_stds = nn.ModuleList([RunningMeanStd((self.value_size,)) for _ in range(task_embedding_dim)]) #   GeneralizedMovingStats((self.value_size,)) #   
+            self.value_mean_stds = nn.ModuleList([RunningMeanStd((self.value_size,)) for _ in range(task_embedding_dim)])
         if normalize_input:
             if isinstance(obs_shape, dict):
                 self.running_mean_stds = nn.ModuleList([RunningMeanStdObs(self.true_obs_dim) for _ in range(task_embedding_dim)])
             else:
                 self.running_mean_stds = nn.ModuleList([RunningMeanStd(self.true_obs_dim) for _ in range(task_embedding_dim)])
-        
+
     def norm_obs(self, observation, task_indices, norm_task_indices=None):
         if observation.shape[0] != task_indices.shape[0]:
             raise ValueError(f"number of observations {observation.shape[0]} does not match number of task indices {task_indices.shape[0]}")
-        
+
         task_indices = task_indices.squeeze(-1)
         if norm_task_indices is None:
             norm_task_indices = task_indices
         norm_task_indices = norm_task_indices.view(-1)
-        
+
         one_hot_tasks = torch.nn.functional.one_hot(task_indices, num_classes=self.task_embedding_dim).float() # (B, num_tasks)
 
+        # Layout: [real_obs (true_obs_dim) | task_oh (task_embedding_dim) | policy_oh (num_policies)]
+        true_obs = observation[:, :self.true_obs_dim]
+        policy_oh = observation[:, self.true_obs_dim + self.task_embedding_dim:]
+
         if self.normalize_input:
-            true_obs = observation[:, :self.true_obs_dim]
             with torch.no_grad():
                 current_mean = torch.zeros_like(true_obs)
                 current_var = torch.ones_like(true_obs)
@@ -58,11 +62,10 @@ class MTModelNetwork(nn.Module):
                         self.running_mean_stds[tid.item()](true_obs[idx])
                     current_mean[idx] = self.running_mean_stds[tid.item()].running_mean.float()
                     current_var[idx] = self.running_mean_stds[tid.item()].running_var.float()
-                normalized_obs  = (true_obs - current_mean) / (current_var + 1e-8).sqrt()
-                return torch.cat([normalized_obs, one_hot_tasks], dim=1)
+                normalized_obs = (true_obs - current_mean) / (current_var + 1e-8).sqrt()
+                return torch.cat([normalized_obs, one_hot_tasks, policy_oh], dim=1)
         else:
-            true_obs = observation[:, :self.true_obs_dim]
-            return torch.cat([true_obs, one_hot_tasks], dim=1)
+            return torch.cat([true_obs, one_hot_tasks, policy_oh], dim=1)
 
     def denorm_value(self, value, task_indices):
         with torch.no_grad():
@@ -297,8 +300,10 @@ class MTModelA2CContinuousLogStd(ModelA2CContinuousLogStd):
             raise KeyError("task_indices not found for a multi task model")
         task_indices = config["task_indices"]
         task_embedding_dim = torch.unique(task_indices).shape[0]
+        num_policies = config.get('num_policies', 0)
         return self.Network(self.network_builder.build(self.model_class, **config), obs_shape=obs_shape,
-            normalize_value=normalize_value, normalize_input=normalize_input, value_size=value_size, task_embedding_dim=task_embedding_dim)
+            normalize_value=normalize_value, normalize_input=normalize_input, value_size=value_size,
+            task_embedding_dim=task_embedding_dim, num_policies=num_policies)
 
     class Network(MTModelNetwork):
         def __init__(self, a2c_network, **kwargs):

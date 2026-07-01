@@ -32,6 +32,8 @@ from isaacgymenvs.tasks.locomotion.legged_base import LeggedRobot
 
 from isaacgymenvs.tasks.franka.vec_task import FrankaBaseEnvV2
 
+from isaacgymenvs.tasks.allegro_kuka.vec_task import AllegroKukaBaseEnv
+
 from isaacgymenvs.tasks.shadow_hand import ShadowHand
 
 
@@ -43,6 +45,9 @@ isaacgym_task_map.update({
     "Cartpole": Cartpole,
     # Franka vec_task
     'meta-world-v2': FrankaBaseEnvV2,
+    # Allegro-Kuka vec_task (multi-task: regrasping / throw / reorientation)
+    'allegro-kuka': AllegroKukaBaseEnv,
+    'AllegroKukaMT': AllegroKukaBaseEnv,
     # Go1
     'go1-benchmark': LeggedRobot,
     # shadow hand

@@ -20,7 +20,7 @@ do
 		task_counts=[492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,492,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491,491]
 		minibatch_size=76800
 	fi
-	t=$((1000000000 / (e * 150)+1))
+	t=$((1000000000 / (e * 250)+1))
 	for i in {42..51}
 	do
 		python isaacgymenvs/train.py \
@@ -35,9 +35,9 @@ do
 		seed=$i \
 		record_videos=False \
 		wandb_activate=True \
-		wandb_project=IsaacGym \
-		sim_device=cuda:0 \
-		rl_device=cuda:0 \
+		wandb_project=SAPG \
+		sim_device=cuda:2 \
+		rl_device=cuda:2 \
 		reward_scale=100 \
 		termination_on_success=False \
 		max_iterations=$t \
